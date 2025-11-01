@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 0ddd3b707ea3d4bbc9f65a092a8d195b
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - _shader: {fileID: 7200000, guid: 239413f239eff43c08b2df910e80e88e, type: 3}
+  - _cameraRig: {instanceID: 0}
+  - _meshFilterConsumer: {instanceID: 0}
+  - _meshColliderConsumer: {instanceID: 0}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 

@@ -1,0 +1,36 @@
+{
+  "name": "com.uralstech.uxr.questmeshing",
+  "displayName": "UXR.QuestMeshing",
+  "description": "Real-time environment mesh, navmesh, and collision generation for Unity using the Meta Quest Depth API.",
+  "keywords": [],
+  "version": "1.0.0-preview.1",
+  "unity": "6000.0",
+  "hideInEditor": false,
+  "documentationUrl": "https://uralstech.github.io/UXR.QuestMeshing/",
+  "changelogUrl": "https://github.com/Uralstech/UXR.QuestMeshing/releases",
+  "licensesUrl": "https://github.com/Uralstech/UXR.QuestMeshing/blob/master/LICENSE",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "repository": "https://github.com/Uralstech/UXR.QuestMeshing.git"
+  },
+  "author": {
+    "name": "Udayshankar Ravikumar",
+    "url": "https://github.com/Uralstech"
+  },
+  "dependencies": {
+    "com.meta.xr.sdk.core": "78.0.0",
+    "com.unity.xr.meta-openxr": "2.3.0",
+    "com.unity.xr.openxr": "1.16.0",
+    "com.unity.xr.arfoundation": "6.3.0",
+    "com.unity.xr.management": "4.5.3",
+    "com.unity.collections": "2.6.3",
+    "com.unity.ai.navigation": "2.0.9",
+    "com.uralstech.utils.singleton": "1.2.1",
+    "com.unity.modules.xr": "1.0.0",
+    "com.unity.modules.androidjni": "1.0.0",
+    "com.unity.modules.physics": "1.0.0",
+    "com.unity.modules.ai": "1.0.0",
+    "com.unity.modules.ui": "1.0.0"
+  }
+}

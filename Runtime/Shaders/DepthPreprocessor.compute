@@ -1,0 +1,55 @@
+// Copyright 2025 URAV ADVANCED LEARNING SYSTEMS PRIVATE LIMITED
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma kernel PreprocessDepth
+
+Texture2DArray<float> _EnvironmentDepthTexture;
+uniform float4x4 _EnvironmentDepthInverseReprojectionMatrices[2];
+
+uniform uint2 TextureSize;
+RWTexture2D<float4> PositionsTexture;
+RWTexture2D<float4> NormalsTexture;
+
+// Samples the depth texture at the given UV coords and converts the value to worldspace coords.
+float3 SampleWorldSpacePositionFromDepth(uint2 pixel, uint eye)
+{
+    const float2 uv = float2(pixel) / TextureSize;
+    const float rawDepth = _EnvironmentDepthTexture[uint3(pixel, eye)].r;
+
+    const float3 clipSpace = float3(uv, rawDepth) * 2.0 - 1.0; // Screen space position (U, V, Depth) in range [0, 1] is converted to clip space [-1, 1]
+
+    const float4 transformed = mul(_EnvironmentDepthInverseReprojectionMatrices[eye], float4(clipSpace, 1));
+    return transformed.xyz / transformed.w;
+}
+
+// Calculates the world space normal for the point at the given pixel in the depth texture.
+float3 CalculateWorldSpaceNormal(uint2 pixel, uint eye, out float3 worldPos)
+{
+    worldPos = SampleWorldSpacePositionFromDepth(pixel, eye);
+    
+    const float3 worldPosHorizontal = SampleWorldSpacePositionFromDepth(pixel + uint2(1, 0), eye);
+    const float3 worldPosVertical = SampleWorldSpacePositionFromDepth(pixel + uint2(0, 1), eye);
+	const float3 horizontalDeriv = worldPosHorizontal - worldPos;
+	const float3 verticalDeriv = worldPosVertical - worldPos;
+
+    return -normalize(cross(horizontalDeriv, verticalDeriv));
+}
+
+[numthreads(8,8,1)]
+void PreprocessDepth(uint3 id: SV_DispatchThreadID)
+{
+    float3 worldPos;
+    NormalsTexture[id.xy] = float4(CalculateWorldSpaceNormal(id.xy, 0, worldPos), 1);
+    PositionsTexture[id.xy] = float4(worldPos, 1);
+}

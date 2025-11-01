@@ -1,0 +1,25 @@
+{
+    "name": "UXR.QuestMeshing",
+    "rootNamespace": "",
+    "references": [
+        "GUID:8efef0e48627b4af5a28950b21575514",
+        "GUID:92703082f92b41ba80f0d6912de66115",
+        "GUID:a9420e37d7990b54abdef6688edbe313",
+        "GUID:e40ba710768534012815d3193fa296cb",
+        "GUID:4847341ff46394e83bb78fbd0652937e",
+        "GUID:f64c9ebcd7899c3448a08dc9f9ddbe30",
+        "GUID:e0cd26848372d4e5c891c569017e11f1",
+        "GUID:2665a8d13d1b3f18800f46e256720795",
+        "GUID:8c4dd21966739024fbd72155091d199e",
+        "GUID:2281fe9ed9abb88469162fc481fcc7a1"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
