@@ -38,6 +38,9 @@ These key settings are exposed in the Inspector for tuning mesh quality, perform
 | **Target Volume Update Rate Hertz** | The target update frequency for the TSDF volume (in Hz). Higher rates improve responsiveness but increase GPU load. | 45 | Min: 0 |
 | **Target Mesh Refresh Rate Hertz** | The target refresh frequency for the generated mesh (in Hz). Lower rates reduce CPU overhead in stable scenes. | 1 | Min: 0 |
 
+### Behavior Notes
+- The TSDF volume is automatically cleared on recenter (via `OVRManager.display.RecenteredPose`). This ensures mesh accuracy, as recentering resets the tracking space offset and invalidates prior voxel data.
+
 ## Utility Component: CPUDepthSampler
 
 See the [API reference](~/api/Uralstech.UXR.QuestMeshing.CPUDepthSampler.yml) for details on using `CPUDepthSampler` to asynchronously sample world-space positions from depth data (e.g., for raycasting or occlusion checks).
