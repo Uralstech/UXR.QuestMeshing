@@ -47,13 +47,19 @@ namespace Uralstech.UXR.QuestMeshing
         /// <param name="threadsX">The total threads for computation in the X dimension.</param>
         /// <param name="threadsY">The total threads for computation in the Y dimension.</param>
         /// <param name="threadsZ">The total threads for computation in the Z dimension.</param>
-        public void Dispatch(int threadsX, int threadsY, int threadsZ)
+        public void Dispatch(int threadsX, int threadsY = 1, int threadsZ = 1)
         {
             _shader.Dispatch(KernelIndex,
                 Mathf.CeilToInt((float)threadsX / ThreadGroupSizes.x),
                 Mathf.CeilToInt((float)threadsY / ThreadGroupSizes.y),
                 Mathf.CeilToInt((float)threadsZ / ThreadGroupSizes.z));
         }
+
+        /// <summary>
+        /// Dispatches the shader kernel.
+        /// </summary>
+        /// <param name="threads">The total threads for computation in 3 dimensions.</param>
+        public void Dispatch(Vector3Int threads) => Dispatch(threads.x, threads.y, threads.z);
 
         /// <summary>
         /// Sets a texture for the kernel.

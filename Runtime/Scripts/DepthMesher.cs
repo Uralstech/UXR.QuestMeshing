@@ -77,7 +77,7 @@ namespace Uralstech.UXR.QuestMeshing
         public Mesh Mesh { get; private set; }
 
         /// <summary>
-        /// Called after <see cref="Mesh"/> is updated and all collision and NavMesh baking is completed.
+        /// Invoked after the <see cref="Mesh"/> is updated and all optional collision and NavMesh baking completes.
         /// </summary>
         public event Action? OnMeshRefreshed;
 
@@ -86,7 +86,7 @@ namespace Uralstech.UXR.QuestMeshing
         [SerializeField, Tooltip("The compute shader containing kernels for volume updates and surface nets meshing.")]
         private ComputeShader _shader;
 
-        [SerializeField, Tooltip("The dimensions of the TSDF volume grid (X: width, Y: height, Z: depth). Higher resolutions improve detail but increase memory and compute cost.")]
+        [SerializeField, Tooltip("The dimensions of the TSDF volume grid (width x height x depth). Higher resolutions will increase scanned volume but increase memory usage and compute cost.")]
         private Vector3Int _volumeSize = new(256, 64, 256);
 
         [SerializeField, Min(0.0f), Tooltip("The real-world size represented by each voxel (in meters). Smaller values yield finer detail but require larger volumes.")]
@@ -104,15 +104,15 @@ namespace Uralstech.UXR.QuestMeshing
         [SerializeField, Tooltip("The maximum number of triangles allowed in the generated mesh (caps GPU memory usage).")]
         private int _trianglesBudget = 64 * 64 * 64;
 
-        /// <summary>The target update frequency for the TSDF volume (in Hz). Higher rates improve responsiveness but increase GPU load.</summary>
-        [Min(0.0f), Tooltip("The target update frequency for the TSDF volume (in Hz). Higher rates improve responsiveness but increase GPU load.")]
+        /// <summary>The target update frequency for the TSDF volume (in Hz). Higher rates improve responsiveness but increase GPU load; lower rates reduce overhead in stable scenes.</summary>
+        [Min(0.0f), Tooltip("The target update frequency for the TSDF volume (in Hz). Higher rates improve responsiveness but increase GPU load; lower rates reduce overhead in stable scenes.")]
         public float TargetVolumeUpdateRateHertz = 45;
 
         /// <summary>The target refresh frequency for the generated mesh (in Hz). Lower rates reduce CPU overhead for stable scenes.</summary>
         [Min(0.0f), Tooltip("The target refresh frequency for the generated mesh (in Hz). Lower rates reduce CPU overhead for stable scenes.")]
         public float TargetMeshRefreshRateHertz = 1;
 
-        [SerializeField, Tooltip("The OVRCameraRig providing eye poses and tracking space. If not assigned, auto-finds via FindAnyObjectByType.")]
+        [SerializeField, Tooltip("The OVRCameraRig providing the eye poses and tracking space. If not assigned, auto-finds via FindAnyObjectByType.")]
         private OVRCameraRig _cameraRig;
 
         [Space, Header("Mesh Consumers")]
@@ -264,9 +264,9 @@ namespace Uralstech.UXR.QuestMeshing
 
         public void Clear()
         {
-            _volumeClearKernel.Dispatch(Volume.width, Volume.height, Volume.volumeDepth);
+            _volumeClearKernel.Dispatch(_volumeSize);
             if (_vertexIndexBuffer != null)
-                _viBufferClearKernel.Dispatch(_vertexIndexBuffer.count, 1, 1);
+                _viBufferClearKernel.Dispatch(_vertexIndexBuffer.count);
         }
 
         private async void RunVolumeUpdateLoopAsync(CancellationToken token)
@@ -299,7 +299,7 @@ namespace Uralstech.UXR.QuestMeshing
                 _shader.SetMatrix(MC_WorldToTrackingMatrix, _trackingSpace.worldToLocalMatrix);
                 _shader.SetMatrix(MC_TrackingToWorldMatrix, _trackingSpace.localToWorldMatrix);
 
-                _updateVoxelsKernel.Dispatch(_frustumVolume!.count, 1, 1);
+                _updateVoxelsKernel.Dispatch(_frustumVolume!.count);
                 await Awaitable.WaitForSecondsAsync(1f / TargetVolumeUpdateRateHertz);
             } while (!token.IsCancellationRequested);
         }
@@ -323,8 +323,8 @@ namespace Uralstech.UXR.QuestMeshing
                 
                 _validTriCounterBuffer!.SetCounterValue(0);
                 _validVertCounterBuffer!.SetCounterValue(0);
-                _sfVertexPassKernel.Dispatch(Volume!.width, Volume.height, Volume.volumeDepth);
-                _sfTrianglePassKernel.Dispatch(Volume!.width, Volume.height, Volume.volumeDepth);
+                _sfVertexPassKernel.Dispatch(_volumeSize);
+                _sfTrianglePassKernel.Dispatch(_volumeSize);
                 Mesh!.bounds = new Bounds(_trackingSpace.TransformPoint(Vector3.zero), (Vector3)_volumeSize * _metersPerVoxel);
 
                 await ProcessMeshDataCPU();
@@ -505,7 +505,7 @@ namespace Uralstech.UXR.QuestMeshing
 
             Volume.Create();
 
-            _shader.SetInts(MC_VolumeSize, Volume.width, Volume.height, Volume.volumeDepth);
+            _shader.SetInts(MC_VolumeSize, _volumeSize.x, _volumeSize.y, _volumeSize.z);
             _shader.SetFloat(MC_MetersPerVoxel, _metersPerVoxel);
 
             _volumeClearKernel.SetTexture(MC_Volume, Volume);
@@ -513,7 +513,7 @@ namespace Uralstech.UXR.QuestMeshing
             _sfVertexPassKernel.SetTexture(MC_Volume, Volume);
             _sfTrianglePassKernel.SetTexture(MC_Volume, Volume);
 
-            _volumeClearKernel.Dispatch(Volume.width, Volume.height, Volume.volumeDepth);
+            _volumeClearKernel.Dispatch(_volumeSize);
         }
 
         private void InitializeMeshData()
@@ -539,7 +539,7 @@ namespace Uralstech.UXR.QuestMeshing
             _sfVertexPassKernel.SetBuffer(MC_VertexIndexBuffer, _vertexIndexBuffer);
             _sfTrianglePassKernel.SetBuffer(MC_VertexIndexBuffer, _vertexIndexBuffer);
             
-            _viBufferClearKernel.Dispatch(_vertexIndexBuffer.count, 1, 1);
+            _viBufferClearKernel.Dispatch(_vertexIndexBuffer.count);
 
             if (_meshFilterConsumer != null)
                 _meshFilterConsumer.mesh = Mesh;
