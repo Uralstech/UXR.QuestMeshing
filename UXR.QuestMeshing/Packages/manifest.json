@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "com.meta.xr.sdk.interaction.ovr": "81.0.0",
     "com.unity.ide.visualstudio": "2.0.25",
     "com.unity.mobile.android-logcat": "1.4.6",
     "com.unity.modules.animation": "1.0.0",

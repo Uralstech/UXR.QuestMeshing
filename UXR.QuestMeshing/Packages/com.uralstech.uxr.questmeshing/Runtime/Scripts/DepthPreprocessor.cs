@@ -69,11 +69,11 @@ namespace Uralstech.UXR.QuestMeshing
     /// </item>
     /// <item>
     /// <term>_EnvironmentDepthWorldPositionsTexture</term>
-    /// <description>Texture containing the points in the (left eye's) XR depth texture converted to world space.</description>
+    /// <description>Texture containing world-space positions from the XR depth texture (computed for the left eye).</description>
     /// </item>
     /// <item>
     /// <term>_EnvironmentDepthWorldNormalsTexture</term>
-    /// <description>Texture containing the normal vectors of the points in the (left eye's) XR depth texture converted to world space.</description>
+    /// <description>Texture containing world-space normals from the XR depth texture (computed for the left eye).</description>
     /// </item>
     /// </list>
     /// </remarks>
@@ -82,6 +82,9 @@ namespace Uralstech.UXR.QuestMeshing
     {
         #region Shader Properties
 #pragma warning disable IDE1006 // Naming Styles
+        private static readonly string Global_SoftOcclusionKeywordName = "SOFT_OCCLUSION";
+        private static readonly string Global_HardOcclusionKeywordName = "HARD_OCCLUSION";
+
         private static readonly int Global_DepthTexture = Shader.PropertyToID("_EnvironmentDepthTexture");
         private static readonly int Global_ReprojectionMatrices = Shader.PropertyToID("_EnvironmentDepthReprojectionMatrices");
         private static readonly int Global_ZBufferParams = Shader.PropertyToID("_EnvironmentDepthZBufferParams");
@@ -147,9 +150,9 @@ namespace Uralstech.UXR.QuestMeshing
         [SerializeField] private OVRCameraRig _cameraRig;
 
         /// <summary>
-        /// Called when this script processes its first depth frame after being enabled.
+        /// Invoked when this script processes its first depth frame after enabling.
         /// </summary>
-        [Tooltip("Called when this script processes its first depth frame.")]
+        [Tooltip("Invoked when this script processes its first depth frame after enabling.")]
         public UnityEvent? OnDataAvailable;
 
         [Space, Header("Debug")]
@@ -169,6 +172,8 @@ namespace Uralstech.UXR.QuestMeshing
         private Material? _softOcclusionPreprocessMat;
         private RenderTexture? _softOcclusionPreprocessTex;
         private RenderTargetSetup? _softOcclusionPreprocessSetup;
+        private GlobalKeyword _softOcclusionKeyword;
+        private GlobalKeyword _hardOcclusionKeyword;
 
         protected override void Awake()
         {
@@ -210,6 +215,9 @@ namespace Uralstech.UXR.QuestMeshing
 
             _occlusionSubsystem = metaOcclusionSubsystem;
             _kernel = new ComputeShaderKernel(_shader, "PreprocessDepth");
+
+            _softOcclusionKeyword = GlobalKeyword.Create(Global_SoftOcclusionKeywordName);
+            _hardOcclusionKeyword = GlobalKeyword.Create(Global_HardOcclusionKeywordName);
             _awakeCompleted = true;
         }
 
@@ -340,7 +348,7 @@ namespace Uralstech.UXR.QuestMeshing
             Shader.SetGlobalMatrixArray(Global_ProjectionMatrices, DepthProjectionMatrices);
             Shader.SetGlobalMatrixArray(Global_ViewMatrices, DepthViewMatrices);
 
-            _kernel.Dispatch(PositionsTexture.width, PositionsTexture.height, 1);
+            _kernel.Dispatch(PositionsTexture.width, PositionsTexture.height);
             if (!IsDataAvailable)
             {
                 // Callback shouldn't block Application.onBeforeRender
@@ -523,18 +531,18 @@ namespace Uralstech.UXR.QuestMeshing
         {
             if (!toggle)
             {
-                Shader.DisableKeyword("SOFT_OCCLUSION");
-                Shader.DisableKeyword("HARD_OCCLUSION");
+                Shader.DisableKeyword(_softOcclusionKeyword);
+                Shader.DisableKeyword(_hardOcclusionKeyword);
             }
 
             if (EnableSoftOcclusion)
             {
-                Shader.EnableKeyword("SOFT_OCCLUSION");
-                Shader.DisableKeyword("HARD_OCCLUSION");
+                Shader.EnableKeyword(_softOcclusionKeyword);
+                Shader.DisableKeyword(_hardOcclusionKeyword);
             } else
             {
-                Shader.DisableKeyword("SOFT_OCCLUSION");
-                Shader.EnableKeyword("HARD_OCCLUSION");
+                Shader.DisableKeyword(_softOcclusionKeyword);
+                Shader.EnableKeyword(_hardOcclusionKeyword);
             }
         }
 

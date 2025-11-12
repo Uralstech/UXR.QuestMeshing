@@ -52,7 +52,7 @@ namespace Uralstech.UXR.QuestMeshing
     /// Usage Notes:
     /// <list type="bullet">
     /// <item><description>Requests are batched and dispatched at the end of the frame via <see cref="DispatchForSamplingAsync"/> to minimize GPU overhead.</description></item>
-    /// <item><description>All public sampling methods require main-thread execution for XR subsystem access; they yield to the main thread if needed.</description></item>
+    /// <item><description>All public sampling methods require main-thread execution for XR subsystem access and yield to the main thread if called from elsewhere.</description></item>
     /// <item><description>Invalid NDC positions (outside [0,1]) will return invalid results—validate with <see cref="IsValidNDC"/> before sampling.</description></item>
     /// <item><description>Errors (e.g., GPU readback failures) return <see langword="null"/>; check return values before use.</description></item>
     /// </list>
@@ -182,7 +182,7 @@ namespace Uralstech.UXR.QuestMeshing
         /// </summary>
         /// <remarks>
         /// This queues the batch and dispatches at end-of-frame for efficiency. Ideal for multiple queries (e.g., raycast hits).
-        /// The returned segment shares the underlying array.
+        /// The returned segment shares the underlying results array (do not modify it externally).
         /// </remarks>
         /// <param name="ndcPositions">The enumerable of NDC positions (x,y in [0,1]) to sample.</param>
         /// <returns>An ArraySegment of results in input order, or <see langword="null"/> if data is unavailable or sampling fails.</returns>
@@ -218,7 +218,7 @@ namespace Uralstech.UXR.QuestMeshing
 
             _shader.SetInt(CS_TotalPositionSampleRequests, count);
             _sampleKernel.SetBuffer(CS_PositionSampleRequests, buffer);
-            _sampleKernel.Dispatch(count, 1, 1);
+            _sampleKernel.Dispatch(count);
 
             NativeArray<Vector3> resultsArray = new(count, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             AsyncGPUReadbackRequest request = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref resultsArray, buffer);
