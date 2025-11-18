@@ -262,6 +262,9 @@ namespace Uralstech.UXR.QuestMeshing
             _indexBuffer.Dispose();
         }
 
+        /// <summary>
+        /// Clears the TSDF volume and vertex-index buffer, essentially resetting the system.
+        /// </summary>
         public void Clear()
         {
             _volumeClearKernel.Dispatch(_volumeSize);
