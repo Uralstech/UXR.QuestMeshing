@@ -277,7 +277,7 @@ void SurfaceNetsVertexPass(uint3 id : SV_DispatchThreadID)
             const float3 depthPos = SampleDepthPosition(vertexNDC);
 
             // We don't need to calculate which room the vertex is in if it's not occluded by anything
-            if (distance(depthPos, vertexPos) <= MetersPerVoxel / 2.0f + 0.03) {
+            if (distance(depthPos, vertexPos) <= MetersPerVoxel) {
                 isDepthVerified = true;
             } else
             {

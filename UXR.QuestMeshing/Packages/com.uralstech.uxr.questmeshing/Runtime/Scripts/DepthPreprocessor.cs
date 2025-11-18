@@ -103,6 +103,12 @@ namespace Uralstech.UXR.QuestMeshing
         #endregion
 
         /// <summary>
+        /// Is the Meta Quest Depth API supported on the current device?
+        /// </summary>
+        /// <remarks>Do not use this from Awake.</remarks>
+        public bool IsSupported { get; private set; }
+
+        /// <summary>
         /// The inverse of <see cref="DepthReprojectionMatrices"/>, used to convert points from the current depth texture frame into world space.
         /// </summary>
         public readonly Matrix4x4[] DepthInverseReprojectionMatrices = new Matrix4x4[2];
@@ -178,6 +184,30 @@ namespace Uralstech.UXR.QuestMeshing
         protected override void Awake()
         {
             base.Awake();
+            XRLoader? loader = LoaderUtility.GetActiveLoader();
+#pragma warning disable UNT0008 // Null propagation on Unity objects
+            XRDisplaySubsystem? displaySubsystem = loader?.GetLoadedSubsystem<XRDisplaySubsystem>();
+#pragma warning restore UNT0008 // Null propagation on Unity objects
+
+            if (displaySubsystem == null)
+            {
+                Debug.LogError($"{nameof(DepthPreprocessor)}: Could not get loaded XR display subsystem.");
+                IsSupported = false;
+                return;
+            }
+
+            _displaySubsystem = displaySubsystem;
+            XROcclusionSubsystem baseOcclusionSubsystem = loader!.GetLoadedSubsystem<XROcclusionSubsystem>();
+            if (baseOcclusionSubsystem == null || baseOcclusionSubsystem is not MetaOpenXROcclusionSubsystem metaOcclusionSubsystem)
+            {
+                Debug.LogError($"{nameof(DepthPreprocessor)}: Could not get loaded Meta OpenXR occlusion subsystem.");
+                IsSupported = false;
+                return;
+            }
+
+            _occlusionSubsystem = metaOcclusionSubsystem;
+            IsSupported = true;
+
             if (_shader == null)
             {
                 Debug.LogError($"{nameof(DepthPreprocessor)}: Compute shader is not assigned. Depth processing will fail.");
@@ -194,26 +224,6 @@ namespace Uralstech.UXR.QuestMeshing
                 }
             }
 
-            XRLoader? loader = LoaderUtility.GetActiveLoader();
-#pragma warning disable UNT0008 // Null propagation on Unity objects
-            XRDisplaySubsystem? displaySubsystem = loader?.GetLoadedSubsystem<XRDisplaySubsystem>();
-#pragma warning restore UNT0008 // Null propagation on Unity objects
-
-            if (displaySubsystem == null)
-            {
-                Debug.LogError($"{nameof(DepthPreprocessor)}: Could not get loaded XR display subsystem.");
-                return;
-            }
-
-            _displaySubsystem = displaySubsystem;
-            XROcclusionSubsystem baseOcclusionSubsystem = loader!.GetLoadedSubsystem<XROcclusionSubsystem>();
-            if (baseOcclusionSubsystem == null || baseOcclusionSubsystem is not MetaOpenXROcclusionSubsystem metaOcclusionSubsystem)
-            {
-                Debug.LogError($"{nameof(DepthPreprocessor)}: Could not get loaded Meta OpenXR occlusion subsystem.");
-                return;
-            }
-
-            _occlusionSubsystem = metaOcclusionSubsystem;
             _kernel = new ComputeShaderKernel(_shader, "PreprocessDepth");
 
             _softOcclusionKeyword = GlobalKeyword.Create(Global_SoftOcclusionKeywordName);

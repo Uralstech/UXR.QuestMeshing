@@ -160,7 +160,7 @@ namespace Uralstech.UXR.QuestMeshing
         /// <remarks>
         /// This queues the request and batches it with others for end-of-frame dispatch.
         /// </remarks>
-        /// <param name="ndcPosition">The NDC position (x,y in [0,1]) to sample.</param>
+        /// <param name="ndcPosition">The NDC position (x,y in [0,1] range) to sample.</param>
         /// <returns>The world-space <see cref="Vector3"/> at the sample point, or <see langword="null"/> if data is unavailable or sampling fails.</returns>
         public async Awaitable<Vector3?> SampleDepthAsync(Vector2 ndcPosition)
         {
@@ -184,7 +184,7 @@ namespace Uralstech.UXR.QuestMeshing
         /// This queues the batch and dispatches at end-of-frame for efficiency. Ideal for multiple queries (e.g., raycast hits).
         /// The returned segment shares the underlying results array (do not modify it externally).
         /// </remarks>
-        /// <param name="ndcPositions">The enumerable of NDC positions (x,y in [0,1]) to sample.</param>
+        /// <param name="ndcPositions">The enumerable of NDC positions (x,y in [0,1] range) to sample.</param>
         /// <returns>An ArraySegment of results in input order, or <see langword="null"/> if data is unavailable or sampling fails.</returns>
         public async Awaitable<ArraySegment<Vector3>?> BatchSampleDepthAsync(IEnumerable<Vector2> ndcPositions)
         {
