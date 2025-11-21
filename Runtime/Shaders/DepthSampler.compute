@@ -12,17 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#pragma kernel SampleDepthPosition
 #include "DepthUtils.hlsl"
+
+#pragma kernel SampleDepthPositionTexture
 
 RWStructuredBuffer<float3> PositionSampleRequests;
 uniform uint TotalPositionSampleRequests;
 
 [numthreads(32,1,1)]
-void SampleDepthPosition(uint3 id: SV_DispatchThreadID)
+void SampleDepthPositionTexture(uint3 id: SV_DispatchThreadID)
 {
     if (id.x > TotalPositionSampleRequests)
         return;
 
     PositionSampleRequests[id.x] = SampleDepthPosition(PositionSampleRequests[id.x].xy);
+}
+
+#pragma kernel SampleDepthNormalTexture
+
+RWStructuredBuffer<float3> NormalSampleRequests;
+uniform uint TotalNormalSampleRequests;
+
+[numthreads(32,1,1)]
+void SampleDepthNormalTexture(uint3 id: SV_DispatchThreadID)
+{
+    if (id.x > TotalNormalSampleRequests)
+        return;
+
+    NormalSampleRequests[id.x] = SampleDepthNormal(NormalSampleRequests[id.x].xy);
 }

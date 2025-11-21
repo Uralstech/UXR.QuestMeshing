@@ -3,7 +3,7 @@
   "displayName": "UXR.QuestMeshing",
   "description": "Real-time environment mesh, navmesh, and collision generation for Unity using the Meta Quest Depth API.",
   "keywords": [],
-  "version": "1.0.1",
+  "version": "1.1.0",
   "unity": "6000.0",
   "hideInEditor": false,
   "documentationUrl": "https://uralstech.github.io/UXR.QuestMeshing/",

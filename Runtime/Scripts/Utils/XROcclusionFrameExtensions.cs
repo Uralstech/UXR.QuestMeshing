@@ -32,7 +32,10 @@ namespace Uralstech.UXR.QuestMeshing
         /// </summary>
         /// <param name="worldToLocalMatrix">A matrix used to convert world space points into the local space of the XR session.</param>
         /// <param name="reprojectionMatrices">The array to populate the reprojection matrices in, must be of length 2.</param>
-        /// <inheritdoc cref="GetBaseFrameData(XROcclusionFrame, Matrix4x4[], Matrix4x4[], out Vector4)"/>
+        /// <param name="projectionMatrices">The array to populate the projection matrices in, must be of length 2.</param>
+        /// <param name="viewMatrices">The array to populate the view matrices in, must be of length 2.</param>
+        /// <param name="zBufferParams">Resulting depth buffer parameters for "_EnvironmentDepthZBufferParams".</param>
+        /// <returns>A boolean representing the success of the operation.</returns>
         public static bool TryGetReprojectionMatrices(this XROcclusionFrame frame,
             Matrix4x4 worldToLocalMatrix,
             Matrix4x4[] reprojectionMatrices,

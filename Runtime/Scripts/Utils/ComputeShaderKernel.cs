@@ -75,7 +75,11 @@ namespace Uralstech.UXR.QuestMeshing
         /// <param name="buffer">The buffer to set.</param>
         public void SetBuffer(int id, ComputeBuffer buffer) => _shader.SetBuffer(KernelIndex, id, buffer);
 
-        /// <inheritdoc cref="SetBuffer(int, ComputeBuffer)"/>
+        /// <summary>
+        /// Sets a buffer for the kernel.
+        /// </summary>
+        /// <param name="id">The parameter ID of the buffer as defined in the shader.</param>
+        /// <param name="buffer">The buffer to set.</param>
         public void SetBuffer(int id, GraphicsBuffer buffer) => _shader.SetBuffer(KernelIndex, id, buffer);
     }
 }
