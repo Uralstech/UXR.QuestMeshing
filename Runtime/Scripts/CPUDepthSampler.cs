@@ -51,7 +51,7 @@ namespace Uralstech.UXR.QuestMeshing
     /// <para>
     /// Usage Notes:
     /// <list type="bullet">
-    /// <item><description>Requests are batched and dispatched at the end of the frame via <see cref="DispatchForSamplingAsync"/> to minimize GPU overhead.</description></item>
+    /// <item><description>Requests are batched and dispatched at the end of the frame via <see cref="SampleBatcher"/> to minimize GPU overhead.</description></item>
     /// <item><description>All public sampling methods require main-thread execution for XR subsystem access and yield to the main thread if called from elsewhere.</description></item>
     /// <item><description>Invalid NDC positions (outside [0,1]) will return invalid results—validate with <see cref="IsValidNDC"/> before sampling.</description></item>
     /// <item><description>Errors (e.g., GPU readback failures) return <see langword="null"/>; check return values before use.</description></item>
