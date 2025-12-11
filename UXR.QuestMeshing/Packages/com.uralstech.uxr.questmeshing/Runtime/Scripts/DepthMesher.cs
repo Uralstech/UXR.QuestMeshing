@@ -16,7 +16,6 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using Unity.AI.Navigation;
-using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using UnityEngine;
@@ -53,18 +52,6 @@ namespace Uralstech.UXR.QuestMeshing
         private static readonly int MC_MaxMeshUpdateDistance = Shader.PropertyToID("MaxMeshUpdateDistance");
 #pragma warning restore IDE1006 // Naming Styles
         #endregion
-
-        [BurstCompile]
-        public readonly struct MeshColliderBakeJob : IJob
-        {
-            public readonly int MeshId;
-            public MeshColliderBakeJob(int meshId)
-            {
-                MeshId = meshId;
-            }
-
-            public void Execute() => Physics.BakeMesh(MeshId, false);
-        }
     
         /// <summary>
         /// The TSDF volume used for the surface nets operation.
@@ -80,6 +67,21 @@ namespace Uralstech.UXR.QuestMeshing
         /// Invoked after the <see cref="Mesh"/> is updated and all optional collision and NavMesh baking completes.
         /// </summary>
         public event Action? OnMeshRefreshed;
+
+        /// <summary>
+        /// Invoked <i>immediately</i> after the <see cref="Mesh"/> is updated.
+        /// </summary>
+        public event Action? OnMeshDataUpdated;
+
+        /// <summary>
+        /// Invoked after the <see cref="Mesh"/> is updated and before optional collision baking is started.
+        /// </summary>
+        public event Action? OnBeforeColliderBuild;
+
+        /// <summary>
+        /// Invoked after the <see cref="Mesh"/> is updated and before optional NavMesh baking is started.
+        /// </summary>
+        public event Action? OnBeforeNavMeshBuild;
 
         #region Editor Settings
         [Header("Mesher Settings")]
@@ -159,7 +161,12 @@ namespace Uralstech.UXR.QuestMeshing
         private Transform _trackingSpace;
         private bool _awakeSuccessful;
         private bool _startCalled;
+
+#if UNITY_6000_3_OR_NEWER
+        private EntityId? _meshIdV2;
+#else
         private int? _meshId;
+#endif
 
         private NavMeshDataInstance? _navMeshDataInstance;
         private JobHandle? _collisionBakeJob;
@@ -393,17 +400,9 @@ namespace Uralstech.UXR.QuestMeshing
             verticesBuf.Dispose();
             indicesBuf.Dispose();
 
-            if (_bakeCollision && _meshId.HasValue)
-            {
-                _collisionBakeJob?.Complete();
-                _collisionBakeJob = new MeshColliderBakeJob(_meshId.Value).Schedule();
+            OnMeshDataUpdated?.Invoke();
 
-                while (!_collisionBakeJob.Value.IsCompleted)
-                    await Awaitable.NextFrameAsync();
-
-                _collisionBakeJob.Value.Complete();
-                _collisionBakeJob = null;
-            }
+            await BakeCollisionIfNeededAsync();
 
             if (_meshColliderConsumer != null)
                 _meshColliderConsumer.sharedMesh = Mesh;
@@ -411,6 +410,8 @@ namespace Uralstech.UXR.QuestMeshing
             if (_bakeNavMesh)
             {
                 await Awaitable.EndOfFrameAsync();
+                OnBeforeNavMeshBuild?.Invoke();
+                
                 if (_navMeshDataInstance?.valid == true)
                     _navMeshDataInstance.Value.Remove();
 
@@ -425,7 +426,43 @@ namespace Uralstech.UXR.QuestMeshing
 
             OnMeshRefreshed?.Invoke();
         }
-        
+
+    #if UNITY_6000_3_OR_NEWER
+        private async Awaitable BakeCollisionIfNeededAsync()
+        {
+            if (_bakeCollision && _meshIdV2.HasValue)
+            {
+                OnBeforeColliderBuild?.Invoke();
+
+                _collisionBakeJob?.Complete();
+                _collisionBakeJob = new MeshColliderBakeJobV2(_meshIdV2.Value).Schedule();
+
+                while (!_collisionBakeJob.Value.IsCompleted)
+                    await Awaitable.NextFrameAsync();
+
+                _collisionBakeJob.Value.Complete();
+                _collisionBakeJob = null;
+            }
+        }
+    #else
+        private async Awaitable BakeCollisionIfNeededAsync()
+        {
+            if (_bakeCollision && _meshId.HasValue)
+            {
+                OnBeforeColliderBuild?.Invoke();
+
+                _collisionBakeJob?.Complete();
+                _collisionBakeJob = new MeshColliderBakeJob(_meshId.Value).Schedule();
+
+                while (!_collisionBakeJob.Value.IsCompleted)
+                    await Awaitable.NextFrameAsync();
+
+                _collisionBakeJob.Value.Complete();
+                _collisionBakeJob = null;
+            }
+        }
+    #endif
+
         // InitializeFrustumVolume is based on https://github.com/anaglyphs/lasertag
         // MIT License
         // 
@@ -522,7 +559,12 @@ namespace Uralstech.UXR.QuestMeshing
         private void InitializeMeshData()
         {
             Mesh = new Mesh();
+
+#if UNITY_6000_3_OR_NEWER
+            _meshIdV2 = Mesh.GetEntityId();
+#else
             _meshId = Mesh.GetInstanceID();
+#endif
 
             int vertexCount = _trianglesBudget * 3;
             Mesh.SetVertexBufferParams(vertexCount, new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3));

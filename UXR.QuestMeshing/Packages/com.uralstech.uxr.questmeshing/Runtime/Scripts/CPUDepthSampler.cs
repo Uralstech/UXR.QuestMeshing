@@ -84,7 +84,7 @@ namespace Uralstech.UXR.QuestMeshing
     [AddComponentMenu("Uralstech/UXR/QuestMeshing/CPU Depth Sampler")]
     public class CPUDepthSampler : DontCreateNewSingleton<CPUDepthSampler>
     {
-        private static readonly Vector3 s_vector3Half = Vector3.one / 2f;
+        private static readonly Vector2 s_ndcHalf = Vector2.one * 0.5f;
 
 #pragma warning disable IDE1006 // Naming Styles
         private static readonly int CS_PositionSampleRequests = Shader.PropertyToID("PositionSampleRequests");
@@ -97,14 +97,8 @@ namespace Uralstech.UXR.QuestMeshing
         [SerializeField] private ComputeShader _shader;
 
         private DepthPreprocessor _preprocessor;
-        private ComputeShaderKernel _positionSampleKernel;
-        private ComputeShaderKernel _normalSampleKernel;
-
-        private readonly List<Vector3> _positionSampleRequests = new();
-        private Task<Vector3[]?>? _positionSampleRequest;
-
-        private readonly List<Vector3> _normalSampleRequests = new();
-        private Task<Vector3[]?>? _normalSampleRequest;
+        private SampleBatcher _positionBatcher;
+        private SampleBatcher _normalBatcher;
 
         protected override void Awake()
         {
@@ -115,8 +109,8 @@ namespace Uralstech.UXR.QuestMeshing
                 return;
             }
 
-            _positionSampleKernel = new ComputeShaderKernel(_shader, "SampleDepthPositionTexture");
-            _normalSampleKernel = new ComputeShaderKernel(_shader, "SampleDepthNormalTexture");
+            _positionBatcher = new SampleBatcher(_shader, "SampleDepthPositionTexture", CS_TotalPositionSampleRequests, CS_PositionSampleRequests);
+            _normalBatcher = new SampleBatcher(_shader, "SampleDepthNormalTexture", CS_TotalNormalSampleRequests, CS_NormalSampleRequests);
         }
 
         protected void Start()
@@ -150,7 +144,8 @@ namespace Uralstech.UXR.QuestMeshing
             }
 
             Vector4 hcsPos = _preprocessor.DepthReprojectionMatrices[(int)eye] * new Vector4(worldPosition.x, worldPosition.y, worldPosition.z, 1);
-            ndcPosition = ((Vector3)hcsPos / hcsPos.w / 2f) + s_vector3Half;
+            Vector2 clipNdc = (Vector3)hcsPos / hcsPos.w;
+            ndcPosition = (clipNdc * 0.5f) + s_ndcHalf;
             return true;
         }
 
@@ -176,12 +171,8 @@ namespace Uralstech.UXR.QuestMeshing
 
             await Awaitable.MainThreadAsync();
 
-            int index = _positionSampleRequests.Count;
-            _positionSampleRequests.Add(ndcPosition);
-
-            _positionSampleRequest ??= DispatchForSamplingAsync(_positionSampleRequests, _positionSampleKernel,
-                CS_TotalPositionSampleRequests, CS_PositionSampleRequests, () => _positionSampleRequest = null);
-            Vector3[]? results = await _positionSampleRequest;
+            int index = _positionBatcher.Queue(ndcPosition);
+            Vector3[]? results = await _positionBatcher.DispatchTask;
             return results?[index];
         }
 
@@ -201,14 +192,8 @@ namespace Uralstech.UXR.QuestMeshing
 
             await Awaitable.MainThreadAsync();
 
-            int index = _positionSampleRequests.Count;
-            foreach (Vector3 ndcPosition in ndcPositions)
-                _positionSampleRequests.Add(ndcPosition);
-            int count = _positionSampleRequests.Count - index;
-
-            _positionSampleRequest ??= DispatchForSamplingAsync(_positionSampleRequests, _positionSampleKernel,
-                CS_TotalPositionSampleRequests, CS_PositionSampleRequests, () => _positionSampleRequest = null);
-            Vector3[]? results = await _positionSampleRequest;
+            int index = _positionBatcher.QueueRange(ndcPositions, out int count);
+            Vector3[]? results = await _positionBatcher.DispatchTask;
 
             return results != null ? new ArraySegment<Vector3>(results, index, count) : null;
         }
@@ -228,12 +213,8 @@ namespace Uralstech.UXR.QuestMeshing
 
             await Awaitable.MainThreadAsync();
 
-            int index = _normalSampleRequests.Count;
-            _normalSampleRequests.Add(ndcPosition);
-
-            _normalSampleRequest ??= DispatchForSamplingAsync(_normalSampleRequests, _normalSampleKernel,
-                CS_TotalNormalSampleRequests, CS_NormalSampleRequests, () => _normalSampleRequest = null);
-            Vector3[]? results = await _normalSampleRequest;
+            int index = _normalBatcher.Queue(ndcPosition);
+            Vector3[]? results = await _normalBatcher.DispatchTask;
             return results?[index];
         }
 
@@ -253,47 +234,94 @@ namespace Uralstech.UXR.QuestMeshing
 
             await Awaitable.MainThreadAsync();
 
-            int index = _normalSampleRequests.Count;
-            foreach (Vector3 ndcPosition in ndcPositions)
-                _normalSampleRequests.Add(ndcPosition);
-            int count = _normalSampleRequests.Count - index;
-
-            _normalSampleRequest ??= DispatchForSamplingAsync(_normalSampleRequests, _normalSampleKernel,
-                CS_TotalNormalSampleRequests, CS_NormalSampleRequests, () => _normalSampleRequest = null);
-            Vector3[]? results = await _normalSampleRequest;
+            int index = _normalBatcher.QueueRange(ndcPositions, out int count);
+            Vector3[]? results = await _normalBatcher.DispatchTask;
 
             return results != null ? new ArraySegment<Vector3>(results, index, count) : null;
         }
 
-        private async Task<Vector3[]?> DispatchForSamplingAsync(List<Vector3> requests, ComputeShaderKernel kernel,
-            int totalRequestsParam, int requestsParam, Action onBeginDispatch)
+        /// <summary>
+        /// Batches requests to sample a texture on the GPU.
+        /// </summary>
+        private class SampleBatcher
         {
-            await Awaitable.EndOfFrameAsync();
+            private Task<Vector3[]?>? _currentTask;
 
-            int count = requests.Count;
-            using ComputeBuffer buffer = new(count, sizeof(float) * 3);
+            /// <summary>
+            /// Gets the current dispatch task, or creates a new one.
+            /// </summary>
+            public Task<Vector3[]?> DispatchTask => _currentTask?.IsCompleted != false ? (_currentTask = DispatchAsync()) : _currentTask;
 
-            buffer.SetData(requests);
-            requests.Clear();
+            private readonly List<Vector3> _requests = new();
+            private readonly ComputeShader _shader;
+            private readonly ComputeShaderKernel _kernel;
+            private readonly int _totalRequestsId, _requestsBufferId;
 
-            onBeginDispatch.Invoke();
-
-            _shader.SetInt(totalRequestsParam, count);
-            kernel.SetBuffer(requestsParam, buffer);
-            kernel.Dispatch(count);
-
-            NativeArray<Vector3> resultsArray = new(count, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            AsyncGPUReadbackRequest request = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref resultsArray, buffer);
-            if (request.hasError)
+            public SampleBatcher(ComputeShader shader, string kernelName, int totalRequestsId, int requestsBufferId)
             {
-                resultsArray.Dispose();
-                return null;
+                _shader = shader;
+                _kernel = new ComputeShaderKernel(shader, kernelName);
+                _totalRequestsId = totalRequestsId;
+                _requestsBufferId = requestsBufferId;
             }
 
-            Vector3[] results = new Vector3[count];
-            resultsArray.CopyTo(results);
-            resultsArray.Dispose();
-            return results;
+            /// <summary>
+            /// Enqueues a single sample request to the queue.
+            /// </summary>
+            /// <param name="ndc">The NDC position at which to sample.</param>
+            /// <returns>The index in the results array which will contain the sample.</returns>
+            public int Queue(Vector2 ndc)
+            {
+                _requests.Add(ndc);
+                return _requests.Count - 1;
+            }
+
+            /// <summary>
+            /// Enqueues multiple requests to the queue.
+            /// </summary>
+            /// <param name="ndcs">The NDC positions at which to sample.</param>
+            /// <param name="count">The number of enqueued sample requests.</param>
+            /// <returns>The index in the results array at which samples for this range.</returns>
+            public int QueueRange(IEnumerable<Vector2> ndcs, out int count)
+            {
+                int startIndex = _requests.Count;
+                foreach (Vector2 ndc in ndcs)
+                    _requests.Add(ndc);
+                
+                count = _requests.Count - startIndex;
+                return startIndex;
+            }
+
+            private async Task<Vector3[]?> DispatchAsync()
+            {
+                await Awaitable.EndOfFrameAsync();
+                _currentTask = null;
+
+                int count = _requests.Count;
+                if (count == 0)
+                    return null;
+
+                using ComputeBuffer buffer = new(count, sizeof(float) * 3);
+                buffer.SetData(_requests);
+                _requests.Clear();
+
+                _shader.SetInt(_totalRequestsId, count);
+                _kernel.SetBuffer(_requestsBufferId, buffer);
+                _kernel.Dispatch(count);
+
+                NativeArray<Vector3> resultsArray = new(count, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+                AsyncGPUReadbackRequest readbackRequest = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref resultsArray, buffer);
+                if (readbackRequest.hasError)
+                {
+                    resultsArray.Dispose();
+                    return null;
+                }
+
+                Vector3[] results = new Vector3[count];
+                resultsArray.CopyTo(results);
+                resultsArray.Dispose();
+                return results;
+            }
         }
     }
 }

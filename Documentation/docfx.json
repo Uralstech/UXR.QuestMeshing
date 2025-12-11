@@ -9,6 +9,9 @@
           ]
         }
       ],
+      "properties": {
+        "DefineConstants": "UNITY_6000_3_OR_NEWER"
+      },
       "dest": "api",
       "filter": "filterConfig.yml",
       "includePrivateMembers": false,
