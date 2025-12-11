@@ -156,9 +156,9 @@ namespace Uralstech.UXR.QuestMeshing
         [SerializeField] private OVRCameraRig _cameraRig;
 
         /// <summary>
-        /// Invoked when this script processes its first depth frame after enabling.
+        /// Invoked when this script processes its first depth frame after enabling. Has a one-frame delay.
         /// </summary>
-        [Tooltip("Invoked when this script processes its first depth frame after enabling.")]
+        [Tooltip("Invoked when this script processes its first depth frame after enabling. Has a one-frame delay.")]
         public UnityEvent? OnDataAvailable;
 
         [Space, Header("Debug")]
@@ -362,11 +362,7 @@ namespace Uralstech.UXR.QuestMeshing
             if (!IsDataAvailable)
             {
                 // Callback shouldn't block Application.onBeforeRender
-                Task.Run(async () =>
-                {
-                    await Awaitable.MainThreadAsync();
-                    OnDataAvailable?.Invoke();
-                });
+                _ = DeferredOnDataAvailableCall();
 
                 ToggleShaderKeywords(true);
                 IsDataAvailable = true;
@@ -374,6 +370,19 @@ namespace Uralstech.UXR.QuestMeshing
 
             if (EnableSoftOcclusion)
                 RenderSoftOcclusion();
+        }
+
+        private async Awaitable DeferredOnDataAvailableCall()
+        {
+            try
+            {
+                await Awaitable.NextFrameAsync();
+                OnDataAvailable?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogException(ex);
+            }
         }
 
         private bool _encounteredUnrecoverablePreprocessError = false;
