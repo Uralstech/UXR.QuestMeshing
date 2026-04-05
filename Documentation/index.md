@@ -11,7 +11,7 @@ Real-time environment mesh, navmesh, and collision generation for Unity using th
 
 ## Installation
 
-This package was designed for Unity 6.0 and above. Built and tested in Unity 6.3.
+This package was designed for Unity 6.0 and above. Built and tested in Unity 6.4.
 
 # [OpenUPM](#tab/openupm)
 
