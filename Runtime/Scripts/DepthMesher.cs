@@ -15,6 +15,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using Unity.AI.Navigation;
 using Unity.Collections;
 using Unity.Jobs;
@@ -226,8 +227,8 @@ namespace Uralstech.UXR.QuestMeshing
                 return;
 
             _updateCancellation = new CancellationTokenSource();
-            RunVolumeUpdateLoopAsync(_updateCancellation.Token);
-            RunMeshRefreshLoopAsync(_updateCancellation.Token);
+            RunVolumeUpdateLoopAsync(_updateCancellation.Token).Forget();
+            RunMeshRefreshLoopAsync(_updateCancellation.Token).Forget();
         }
 
         protected void OnDisable()
@@ -279,7 +280,7 @@ namespace Uralstech.UXR.QuestMeshing
                 _viBufferClearKernel.Dispatch(_vertexIndexBuffer.count);
         }
 
-        private async void RunVolumeUpdateLoopAsync(CancellationToken token)
+        private async Task RunVolumeUpdateLoopAsync(CancellationToken token)
         {
             while (!_startCalled)
                 await Awaitable.NextFrameAsync();
@@ -314,7 +315,7 @@ namespace Uralstech.UXR.QuestMeshing
             } while (!token.IsCancellationRequested);
         }
 
-        private async void RunMeshRefreshLoopAsync(CancellationToken token)
+        private async Task RunMeshRefreshLoopAsync(CancellationToken token)
         {
             while (!_startCalled)
                 await Awaitable.NextFrameAsync();
