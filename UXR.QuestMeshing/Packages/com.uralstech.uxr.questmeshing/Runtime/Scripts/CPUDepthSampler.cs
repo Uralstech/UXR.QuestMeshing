@@ -96,7 +96,7 @@ namespace Uralstech.UXR.QuestMeshing
         [Tooltip("The compute shader containing the kernels for unprojecting NDC to world positions and normals.")]
         [SerializeField] private ComputeShader _shader;
 
-        private DepthPreprocessor _preprocessor;
+        private DepthPreprocessor? _preprocessor;
         private SampleBatcher _positionBatcher;
         private SampleBatcher _normalBatcher;
 
@@ -115,14 +115,11 @@ namespace Uralstech.UXR.QuestMeshing
 
         protected void Start()
         {
-            if (!DepthPreprocessor.HasInstance)
-            {
-                Debug.LogError($"{nameof(CPUDepthSampler)}: No instance of {nameof(DepthPreprocessor)} found in scene.");
-                enabled = false;
+            if (DepthPreprocessor.TryGetInstance(out _preprocessor))
                 return;
-            }
-
-            _preprocessor = DepthPreprocessor.Instance;
+            
+            Debug.LogError($"{nameof(CPUDepthSampler)}: No instance of {nameof(DepthPreprocessor)} found in scene.");
+            enabled = false;
         }
 
         /// <summary>
@@ -250,7 +247,8 @@ namespace Uralstech.UXR.QuestMeshing
             /// <summary>
             /// Gets the current dispatch task, or creates a new one.
             /// </summary>
-            public Task<Vector3[]?> DispatchTask => _currentTask?.IsCompleted != false ? (_currentTask = DispatchAsync()) : _currentTask;
+            public Task<Vector3[]?> DispatchTask => _currentTask?.IsCompleted != false
+                ? _currentTask = DispatchAsync() : _currentTask;
 
             private readonly List<Vector3> _requests = new();
             private readonly ComputeShader _shader;
@@ -301,7 +299,7 @@ namespace Uralstech.UXR.QuestMeshing
                 if (count == 0)
                     return null;
 
-                using ComputeBuffer buffer = new(count, sizeof(float) * 3);
+                using GraphicsBuffer buffer = new(GraphicsBuffer.Target.Structured, count, sizeof(float) * 3);
                 buffer.SetData(_requests);
                 _requests.Clear();
 

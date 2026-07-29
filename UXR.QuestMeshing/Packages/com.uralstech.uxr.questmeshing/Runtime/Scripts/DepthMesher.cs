@@ -135,6 +135,15 @@ namespace Uralstech.UXR.QuestMeshing
 
         [SerializeField, Tooltip("The NavMeshSurface component to bake the mesh into.")]
         private NavMeshSurface _navMeshSurface;
+        
+        [SerializeField, Tooltip("Uses an optimized NavMesh baking path that updates the NavMesh using only the generated depth mesh. " +
+                                 "This can be faster than a full NavMeshSurface bake, but all other NavMesh build sources are ignored.")]
+        private bool _useFastNavMeshBake;
+
+        [SerializeField, Min(0), Tooltip("Maximum number of worker jobs Unity may use when performing a fast NavMesh bake. " +
+                                         "Higher values can reduce bake time on CPUs with more cores, but may increase CPU usage and " +
+                                         "compete with other jobs. Set to 1 to minimize background CPU contention.")]
+        private uint _fastNavMeshBakeWorkers = 1;
         #endregion
     
         #region Shader Kernels and Buffers
@@ -146,13 +155,17 @@ namespace Uralstech.UXR.QuestMeshing
 
         // cached points within viewspace depth frustum 
         // like a 3D lookup table
-        private ComputeBuffer? _frustumVolume;
-        private ComputeBuffer _validVertCounterBuffer;
-        private ComputeBuffer _validTriCounterBuffer;
-        private ComputeBuffer _counterCopyBuffer;
-        private ComputeBuffer _vertexIndexBuffer;
-        private ComputeBuffer _vertexBuffer;
-        private ComputeBuffer _indexBuffer;
+        private GraphicsBuffer? _frustumVolume;
+        private GraphicsBuffer _validVertCounterBuffer;
+        private GraphicsBuffer _validTriCounterBuffer;
+        private GraphicsBuffer _counterCopyBuffer;
+        private GraphicsBuffer _vertexIndexBuffer;
+        private GraphicsBuffer _vertexBuffer;
+        private GraphicsBuffer _indexBuffer;
+        
+        private NativeArray<uint> _triangleCountArray;
+        private NativeArray<Vector3> _verticesArray;
+        private NativeArray<uint> _indicesArray;
         #endregion
 
         private readonly Matrix4x4[] _viewToWorldMatrices = new Matrix4x4[2];
@@ -169,7 +182,6 @@ namespace Uralstech.UXR.QuestMeshing
         private int? _meshId;
 #endif
 
-        private NavMeshDataInstance? _navMeshDataInstance;
         private JobHandle? _collisionBakeJob;
 
         protected override void Awake()
@@ -211,13 +223,12 @@ namespace Uralstech.UXR.QuestMeshing
 
         protected void Start()
         {
-            if (DepthPreprocessor.Instance == null)
+            if (!DepthPreprocessor.TryGetInstance(out _depthPreprocessor))
             {
                 Debug.LogError($"{nameof(DepthMesher)}: {nameof(DepthPreprocessor)} was not found in the current scene.");
                 enabled = false;
             }
 
-            _depthPreprocessor = DepthPreprocessor.Instance;
             _startCalled = true;
         }
 
@@ -247,11 +258,6 @@ namespace Uralstech.UXR.QuestMeshing
                 return;
 
             OVRManager.display.RecenteredPose -= Clear;
-            if (_navMeshDataInstance.HasValue)
-            {
-                _navMeshDataInstance.Value.Remove();
-                _navMeshDataInstance = null;
-            }
             
             _collisionBakeJob?.Complete();
             Volume.Release();
@@ -268,6 +274,10 @@ namespace Uralstech.UXR.QuestMeshing
             _vertexIndexBuffer.Dispose();
             _vertexBuffer.Dispose();
             _indexBuffer.Dispose();
+            
+            _triangleCountArray.Dispose();
+            _verticesArray.Dispose();
+            _indicesArray.Dispose();
         }
 
         /// <summary>
@@ -342,64 +352,48 @@ namespace Uralstech.UXR.QuestMeshing
                 await Awaitable.WaitForSecondsAsync(1f / TargetMeshRefreshRateHertz);
             } while (!token.IsCancellationRequested);
         }
-
+        
         private async Awaitable ProcessMeshDataCPU()
         {
-            NativeArray<uint> countBuf = new(1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            ComputeBuffer.CopyCount(_validTriCounterBuffer, _counterCopyBuffer, 0);
+            GraphicsBuffer.CopyCount(_validTriCounterBuffer, _counterCopyBuffer, 0);
 
-            AsyncGPUReadbackRequest vtcResult = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref countBuf, _counterCopyBuffer);
+            AsyncGPUReadbackRequest vtcResult = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref _triangleCountArray, _counterCopyBuffer);
             if (vtcResult.hasError)
             {
                 Debug.LogError($"{nameof(DepthMesher)}: Could not process mesh data due to GPU readback error for valid triangles count.");
-                countBuf.Dispose();
                 return;
             }
 
-            int triangleCount = Mathf.Min((int)countBuf[0], _trianglesBudget);
+            int triangleCount = Mathf.Min((int)_triangleCountArray[0], _trianglesBudget);
             int indexCount = triangleCount * 3;
 
-            ComputeBuffer.CopyCount(_validVertCounterBuffer, _counterCopyBuffer, 0);
-            vtcResult = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref countBuf, _counterCopyBuffer);
+            GraphicsBuffer.CopyCount(_validVertCounterBuffer, _counterCopyBuffer, 0);
+            vtcResult = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref _triangleCountArray, _counterCopyBuffer);
             if (vtcResult.hasError)
             {
                 Debug.LogError($"{nameof(DepthMesher)}: Could not process mesh data due to GPU readback error for valid vertices count.");
-                countBuf.Dispose();
                 return;
             }
 
-            int vertexCount = (int)countBuf[0];
-            countBuf.Dispose();
-
+            int vertexCount = (int)_triangleCountArray[0];
             if (triangleCount == 0)
                 return;
-
-            NativeArray<Vector3> verticesBuf = new(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            NativeArray<uint> indicesBuf = new(indexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-
+            
             (Awaitable<AsyncGPUReadbackRequest> vResultTask, Awaitable<AsyncGPUReadbackRequest> iResultTask) = (
-                AsyncGPUReadback.RequestIntoNativeArrayAsync(ref verticesBuf, _vertexBuffer, sizeof(float) * 3 * vertexCount, 0),
-                AsyncGPUReadback.RequestIntoNativeArrayAsync(ref indicesBuf, _indexBuffer, sizeof(uint) * indexCount, 0)
+                AsyncGPUReadback.RequestIntoNativeArrayAsync(ref _verticesArray, _vertexBuffer, sizeof(float) * 3 * vertexCount, 0),
+                AsyncGPUReadback.RequestIntoNativeArrayAsync(ref _indicesArray, _indexBuffer, sizeof(uint) * indexCount, 0)
             );
 
             (AsyncGPUReadbackRequest vResult, AsyncGPUReadbackRequest iResult) = (await vResultTask, await iResultTask);
             if (vResult.hasError || iResult.hasError)
             {
                 Debug.LogError($"{nameof(DepthMesher)}: Could not process mesh data due to GPU readback error for vertex or index buffer.");
-                verticesBuf.Dispose();
-                indicesBuf.Dispose();
                 return;
             }
 
-            if (_meshColliderConsumer != null && !_bakeCollision)
-                _meshColliderConsumer.sharedMesh = null;
-
-            Mesh!.SetVertexBufferData(verticesBuf, 0, 0, vertexCount, flags: MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
-            Mesh.SetIndexBufferData(indicesBuf, 0, 0, indexCount, flags: MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
+            Mesh!.SetVertexBufferData(_verticesArray, 0, 0, vertexCount, flags: MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
+            Mesh.SetIndexBufferData(_indicesArray, 0, 0, indexCount, flags: MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
             Mesh.SetSubMesh(0, new SubMeshDescriptor(0, indexCount), MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
-
-            verticesBuf.Dispose();
-            indicesBuf.Dispose();
 
             OnMeshDataUpdated?.Invoke();
 
@@ -408,63 +402,164 @@ namespace Uralstech.UXR.QuestMeshing
             if (_meshColliderConsumer != null)
                 _meshColliderConsumer.sharedMesh = Mesh;
 
-            if (_bakeNavMesh)
-            {
-                await Awaitable.EndOfFrameAsync();
-                OnBeforeNavMeshBuild?.Invoke();
+            await BakeNavMeshIfNeededAsync();
+            OnMeshRefreshed?.Invoke();
+        }
+
+        private async Awaitable BakeNavMeshIfNeededAsync()
+        {
+            if (!_bakeNavMesh)
+                return;
+            
+            await Awaitable.EndOfFrameAsync();
+            OnBeforeNavMeshBuild?.Invoke();
+            
+            if (_navMeshSurface.navMeshData == null)
+                _navMeshSurface.navMeshData = new NavMeshData();
                 
-                if (_navMeshDataInstance?.valid == true)
-                    _navMeshDataInstance.Value.Remove();
-
-                NavMeshData navMeshData = new();
-                await _navMeshSurface.UpdateNavMesh(navMeshData);
-
-                NavMeshDataInstance navMeshDataInstance = NavMesh.AddNavMeshData(navMeshData);
-                navMeshDataInstance.owner = this;
-
-                _navMeshDataInstance = navMeshDataInstance;
+            _navMeshSurface.AddData();
+            
+            bool useFastBake = _useFastNavMeshBake;
+            if (_navMeshSurface.useGeometry == NavMeshCollectGeometry.PhysicsColliders
+                && _meshColliderConsumer == null)
+            {
+                Debug.LogError($"{nameof(DepthMesher)}: Fast NavMesh baking enabled with Physics colliders, but no MeshCollider consumer was set. Defaulting to slow baking.");
+                useFastBake = false;
+            }
+            else if (_navMeshSurface.useGeometry == NavMeshCollectGeometry.RenderMeshes
+                     && _meshFilterConsumer == null)
+            {
+                Debug.LogError($"{nameof(DepthMesher)}: Fast NavMesh baking enabled with Render meshes, but no MeshFilter consumer was set. Defaulting to slow baking.");
+                useFastBake = false;
+            }
+            
+            if (!useFastBake)
+            {
+                await _navMeshSurface.UpdateNavMesh(_navMeshSurface.navMeshData);
+                _useFastNavMeshBake = useFastBake;
+                return;
             }
 
-            OnMeshRefreshed?.Invoke();
+            Transform root = _navMeshSurface.useGeometry == NavMeshCollectGeometry.PhysicsColliders
+                ? _meshColliderConsumer!.transform : _meshFilterConsumer!.transform;
+            
+            List<NavMeshBuildMarkup> markups = new(1);
+            if (root.TryGetComponent(out NavMeshModifier modifier))
+            {
+                markups.Add(new NavMeshBuildMarkup()
+                {
+                    root = modifier.transform,
+                    overrideArea = modifier.overrideArea,
+                    area = modifier.area,
+                    ignoreFromBuild = false,
+                    applyToChildren = false,
+                    overrideGenerateLinks = modifier.overrideGenerateLinks,
+                    generateLinks = modifier.generateLinks,
+                });
+            }
+            
+            List<NavMeshBuildSource> sources = new(1);
+            NavMeshBuilder.CollectSources(root, _navMeshSurface.layerMask, _navMeshSurface.useGeometry,
+                _navMeshSurface.defaultArea, markups, sources);
+
+            if (sources.Count == 0)
+            {
+                Debug.LogWarning($"{nameof(DepthMesher)}: {root.name} could not be detected as a NavMesh build source.");
+                return;
+            }
+
+            if (sources.Count > 1)
+                Debug.LogWarning($"{nameof(DepthMesher)}: Did not expect more than one NavMesh build source from {root.name}, bounds calculation will only account for scanned Mesh.");
+            
+            Matrix4x4 worldToSurface = Matrix4x4.TRS(
+                _navMeshSurface.transform.position,
+                _navMeshSurface.transform.rotation,
+                Vector3.one).inverse;
+
+            Bounds navMeshBounds = new();
+            navMeshBounds.Encapsulate(GetWorldBounds(worldToSurface * sources[0].transform, Mesh.bounds));
+            navMeshBounds.Expand(0.1f);
+            
+            NavMeshBuildSettings settings = _navMeshSurface.GetBuildSettings();
+            settings.maxJobWorkers = _fastNavMeshBakeWorkers;
+            
+            await NavMeshBuilder.UpdateNavMeshDataAsync(_navMeshSurface.navMeshData, settings, sources, navMeshBounds);
+        }
+        
+        // Abs and GetWorldBounds are based on https://github.com/Unity-Technologies/NavMeshComponents,
+        // licensed under the MIT License:
+        // The MIT License (MIT)
+        // 
+        // Copyright (c) 2016, Unity Technologies
+        // 
+        // Permission is hereby granted, free of charge, to any person obtaining a copy
+        // of this software and associated documentation files (the "Software"), to deal
+        // in the Software without restriction, including without limitation the rights
+        // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        // copies of the Software, and to permit persons to whom the Software is
+        // furnished to do so, subject to the following conditions:
+        // 
+        // The above copyright notice and this permission notice shall be included in
+        // all copies or substantial portions of the Software.
+        // 
+        // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        // AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+        // THE SOFTWARE.
+        private static Vector3 Abs(Vector3 v) =>
+            new(Mathf.Abs(v.x), Mathf.Abs(v.y), Mathf.Abs(v.z));
+
+        private static Bounds GetWorldBounds(Matrix4x4 mat, Bounds bounds)
+        {
+            Vector3 absAxisX = Abs(mat.MultiplyVector(Vector3.right));
+            Vector3 absAxisY = Abs(mat.MultiplyVector(Vector3.up));
+            Vector3 absAxisZ = Abs(mat.MultiplyVector(Vector3.forward));
+            Vector3 worldPosition = mat.MultiplyPoint(bounds.center);
+            Vector3 worldSize = (absAxisX * bounds.size.x) + (absAxisY * bounds.size.y) + (absAxisZ * bounds.size.z);
+            return new Bounds(worldPosition, worldSize);
         }
 
     #if UNITY_6000_3_OR_NEWER
         private async Awaitable BakeCollisionIfNeededAsync()
         {
-            if (_bakeCollision && _meshIdV2.HasValue)
-            {
-                OnBeforeColliderBuild?.Invoke();
+            if (!_bakeCollision || !_meshIdV2.HasValue)
+                return;
 
-                _collisionBakeJob?.Complete();
-                _collisionBakeJob = new MeshColliderBakeJobV2(_meshIdV2.Value).Schedule();
+            OnBeforeColliderBuild?.Invoke();
 
-                while (!_collisionBakeJob.Value.IsCompleted)
-                    await Awaitable.NextFrameAsync();
+            _collisionBakeJob?.Complete();
+            _collisionBakeJob = new MeshColliderBakeJobV2(_meshIdV2.Value).Schedule();
 
-                _collisionBakeJob.Value.Complete();
-                _collisionBakeJob = null;
-            }
+            while (!_collisionBakeJob.Value.IsCompleted)
+                await Awaitable.NextFrameAsync();
+
+            _collisionBakeJob.Value.Complete();
+            _collisionBakeJob = null;
         }
     #else
         private async Awaitable BakeCollisionIfNeededAsync()
         {
-            if (_bakeCollision && _meshId.HasValue)
-            {
-                OnBeforeColliderBuild?.Invoke();
+            if (!_bakeCollision || !_meshId.HasValue)
+                return;
+            
+            OnBeforeColliderBuild?.Invoke();
 
-                _collisionBakeJob?.Complete();
-                _collisionBakeJob = new MeshColliderBakeJob(_meshId.Value).Schedule();
+            _collisionBakeJob?.Complete();
+            _collisionBakeJob = new MeshColliderBakeJob(_meshId.Value).Schedule();
 
-                while (!_collisionBakeJob.Value.IsCompleted)
-                    await Awaitable.NextFrameAsync();
+            while (!_collisionBakeJob.Value.IsCompleted)
+                await Awaitable.NextFrameAsync();
 
-                _collisionBakeJob.Value.Complete();
-                _collisionBakeJob = null;
-            }
+            _collisionBakeJob.Value.Complete();
+            _collisionBakeJob = null;
         }
     #endif
 
-        // InitializeFrustumVolume is based on https://github.com/anaglyphs/lasertag
+        // InitializeFrustumVolume is based on https://github.com/anaglyphs/lasertag,
+        // licensed under the MIT License:
         // MIT License
         // 
         // Copyright (c) 2024 Julian Triveri & Hazel Roeder
@@ -519,7 +614,7 @@ namespace Uralstech.UXR.QuestMeshing
                 }
             }
 
-            _frustumVolume = new(positions.Count, sizeof(float) * 3);
+            _frustumVolume = new GraphicsBuffer(GraphicsBuffer.Target.Structured, positions.Count, sizeof(float) * 3);
             _frustumVolume.SetData(positions);
 
             _updateVoxelsKernel.SetBuffer(MC_FrustumVolume, _frustumVolume);
@@ -568,11 +663,11 @@ namespace Uralstech.UXR.QuestMeshing
 #endif
 
             int vertexCount = _trianglesBudget * 3;
-            Mesh.SetVertexBufferParams(vertexCount, new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3));
+            Mesh.SetVertexBufferParams(vertexCount, new VertexAttributeDescriptor(VertexAttribute.Position));
             Mesh.SetIndexBufferParams(vertexCount, IndexFormat.UInt32);
 
-            _vertexBuffer = new ComputeBuffer(vertexCount, sizeof(float) * 3, ComputeBufferType.Structured);
-            _indexBuffer = new ComputeBuffer(_trianglesBudget, sizeof(uint) * 3, ComputeBufferType.Structured);
+            _vertexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, vertexCount, sizeof(float) * 3);
+            _indexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _trianglesBudget, sizeof(uint) * 3);
             
             _sfVertexPassKernel.SetBuffer(MC_VertexBuffer, _vertexBuffer);
             _sfTrianglePassKernel.SetBuffer(MC_IndexBuffer, _indexBuffer);
@@ -580,25 +675,29 @@ namespace Uralstech.UXR.QuestMeshing
             _shader.SetFloat(MC_MaxMeshUpdateDistance, _maxMeshUpdateDistance);
             _shader.SetInt(MC_MaxTriangles, _trianglesBudget);
 
-            _vertexIndexBuffer = new ComputeBuffer(_volumeSize.x * _volumeSize.y * _volumeSize.z, sizeof(uint));
+            _vertexIndexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _volumeSize.x * _volumeSize.y * _volumeSize.z, sizeof(uint));
             _viBufferClearKernel.SetBuffer(MC_VertexIndexBuffer, _vertexIndexBuffer);
             _sfVertexPassKernel.SetBuffer(MC_VertexIndexBuffer, _vertexIndexBuffer);
             _sfTrianglePassKernel.SetBuffer(MC_VertexIndexBuffer, _vertexIndexBuffer);
             
             _viBufferClearKernel.Dispatch(_vertexIndexBuffer.count);
 
+            _triangleCountArray = new NativeArray<uint>(1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            _verticesArray = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            _indicesArray = new NativeArray<uint>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            
             if (_meshFilterConsumer != null)
                 _meshFilterConsumer.mesh = Mesh;
         }
 
         private void InitializeCounters()
         {
-            _counterCopyBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Raw);
+            _counterCopyBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 1, sizeof(uint));
 
-            _validVertCounterBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Counter);
+            _validVertCounterBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Counter ,1, sizeof(uint));
             _sfVertexPassKernel.SetBuffer(MC_ValidVertexCounter, _validVertCounterBuffer);
 
-            _validTriCounterBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Counter);
+            _validTriCounterBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Counter, 1, sizeof(uint));
             _sfTrianglePassKernel.SetBuffer(MC_ValidTriangleCounter, _validTriCounterBuffer);
         }
     }
