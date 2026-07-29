@@ -135,6 +135,15 @@ namespace Uralstech.UXR.QuestMeshing
 
         [SerializeField, Tooltip("The NavMeshSurface component to bake the mesh into.")]
         private NavMeshSurface _navMeshSurface;
+        
+        [SerializeField, Tooltip("Uses an optimized NavMesh baking path that updates the NavMesh using only the generated depth mesh. " +
+                                 "This can be faster than a full NavMeshSurface bake, but all other NavMesh build sources are ignored.")]
+        private bool _useFastNavMeshBake;
+
+        [SerializeField, Min(0), Tooltip("Maximum number of worker jobs Unity may use when performing a fast NavMesh bake. " +
+                                         "Higher values can reduce bake time on CPUs with more cores, but may increase CPU usage and " +
+                                         "compete with other jobs. Set to 1 to minimize background CPU contention.")]
+        private uint _fastNavMeshBakeWorkers = 1;
         #endregion
     
         #region Shader Kernels and Buffers
@@ -393,58 +402,164 @@ namespace Uralstech.UXR.QuestMeshing
             if (_meshColliderConsumer != null)
                 _meshColliderConsumer.sharedMesh = Mesh;
 
-            if (_bakeNavMesh)
-            {
-                await Awaitable.EndOfFrameAsync();
-                OnBeforeNavMeshBuild?.Invoke();
+            await BakeNavMeshIfNeededAsync();
+            OnMeshRefreshed?.Invoke();
+        }
 
-                if (_navMeshSurface.navMeshData == null)
-                    _navMeshSurface.navMeshData = new NavMeshData();
+        private async Awaitable BakeNavMeshIfNeededAsync()
+        {
+            if (!_bakeNavMesh)
+                return;
+            
+            await Awaitable.EndOfFrameAsync();
+            OnBeforeNavMeshBuild?.Invoke();
+            
+            if (_navMeshSurface.navMeshData == null)
+                _navMeshSurface.navMeshData = new NavMeshData();
                 
-                _navMeshSurface.AddData();
+            _navMeshSurface.AddData();
+            
+            bool useFastBake = _useFastNavMeshBake;
+            if (_navMeshSurface.useGeometry == NavMeshCollectGeometry.PhysicsColliders
+                && _meshColliderConsumer == null)
+            {
+                Debug.LogError($"{nameof(DepthMesher)}: Fast NavMesh baking enabled with Physics colliders, but no MeshCollider consumer was set. Defaulting to slow baking.");
+                useFastBake = false;
+            }
+            else if (_navMeshSurface.useGeometry == NavMeshCollectGeometry.RenderMeshes
+                     && _meshFilterConsumer == null)
+            {
+                Debug.LogError($"{nameof(DepthMesher)}: Fast NavMesh baking enabled with Render meshes, but no MeshFilter consumer was set. Defaulting to slow baking.");
+                useFastBake = false;
+            }
+            
+            if (!useFastBake)
+            {
                 await _navMeshSurface.UpdateNavMesh(_navMeshSurface.navMeshData);
+                _useFastNavMeshBake = useFastBake;
+                return;
             }
 
-            OnMeshRefreshed?.Invoke();
+            Transform root = _navMeshSurface.useGeometry == NavMeshCollectGeometry.PhysicsColliders
+                ? _meshColliderConsumer!.transform : _meshFilterConsumer!.transform;
+            
+            List<NavMeshBuildMarkup> markups = new(1);
+            if (root.TryGetComponent(out NavMeshModifier modifier))
+            {
+                markups.Add(new NavMeshBuildMarkup()
+                {
+                    root = modifier.transform,
+                    overrideArea = modifier.overrideArea,
+                    area = modifier.area,
+                    ignoreFromBuild = false,
+                    applyToChildren = false,
+                    overrideGenerateLinks = modifier.overrideGenerateLinks,
+                    generateLinks = modifier.generateLinks,
+                });
+            }
+            
+            List<NavMeshBuildSource> sources = new(1);
+            NavMeshBuilder.CollectSources(root, _navMeshSurface.layerMask, _navMeshSurface.useGeometry,
+                _navMeshSurface.defaultArea, markups, sources);
+
+            if (sources.Count == 0)
+            {
+                Debug.LogWarning($"{nameof(DepthMesher)}: {root.name} could not be detected as a NavMesh build source.");
+                return;
+            }
+
+            if (sources.Count > 1)
+                Debug.LogWarning($"{nameof(DepthMesher)}: Did not expect more than one NavMesh build source from {root.name}, bounds calculation will only account for scanned Mesh.");
+            
+            Matrix4x4 worldToSurface = Matrix4x4.TRS(
+                _navMeshSurface.transform.position,
+                _navMeshSurface.transform.rotation,
+                Vector3.one).inverse;
+
+            Bounds navMeshBounds = new();
+            navMeshBounds.Encapsulate(GetWorldBounds(worldToSurface * sources[0].transform, Mesh.bounds));
+            navMeshBounds.Expand(0.1f);
+            
+            NavMeshBuildSettings settings = _navMeshSurface.GetBuildSettings();
+            settings.maxJobWorkers = _fastNavMeshBakeWorkers;
+            
+            await NavMeshBuilder.UpdateNavMeshDataAsync(_navMeshSurface.navMeshData, settings, sources, navMeshBounds);
+        }
+        
+        // Abs and GetWorldBounds are based on https://github.com/Unity-Technologies/NavMeshComponents,
+        // licensed under the MIT License:
+        // The MIT License (MIT)
+        // 
+        // Copyright (c) 2016, Unity Technologies
+        // 
+        // Permission is hereby granted, free of charge, to any person obtaining a copy
+        // of this software and associated documentation files (the "Software"), to deal
+        // in the Software without restriction, including without limitation the rights
+        // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        // copies of the Software, and to permit persons to whom the Software is
+        // furnished to do so, subject to the following conditions:
+        // 
+        // The above copyright notice and this permission notice shall be included in
+        // all copies or substantial portions of the Software.
+        // 
+        // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        // AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+        // THE SOFTWARE.
+        private static Vector3 Abs(Vector3 v) =>
+            new(Mathf.Abs(v.x), Mathf.Abs(v.y), Mathf.Abs(v.z));
+
+        private static Bounds GetWorldBounds(Matrix4x4 mat, Bounds bounds)
+        {
+            Vector3 absAxisX = Abs(mat.MultiplyVector(Vector3.right));
+            Vector3 absAxisY = Abs(mat.MultiplyVector(Vector3.up));
+            Vector3 absAxisZ = Abs(mat.MultiplyVector(Vector3.forward));
+            Vector3 worldPosition = mat.MultiplyPoint(bounds.center);
+            Vector3 worldSize = (absAxisX * bounds.size.x) + (absAxisY * bounds.size.y) + (absAxisZ * bounds.size.z);
+            return new Bounds(worldPosition, worldSize);
         }
 
     #if UNITY_6000_3_OR_NEWER
         private async Awaitable BakeCollisionIfNeededAsync()
         {
-            if (_bakeCollision && _meshIdV2.HasValue)
-            {
-                OnBeforeColliderBuild?.Invoke();
+            if (!_bakeCollision || !_meshIdV2.HasValue)
+                return;
 
-                _collisionBakeJob?.Complete();
-                _collisionBakeJob = new MeshColliderBakeJobV2(_meshIdV2.Value).Schedule();
+            OnBeforeColliderBuild?.Invoke();
 
-                while (!_collisionBakeJob.Value.IsCompleted)
-                    await Awaitable.NextFrameAsync();
+            _collisionBakeJob?.Complete();
+            _collisionBakeJob = new MeshColliderBakeJobV2(_meshIdV2.Value).Schedule();
 
-                _collisionBakeJob.Value.Complete();
-                _collisionBakeJob = null;
-            }
+            while (!_collisionBakeJob.Value.IsCompleted)
+                await Awaitable.NextFrameAsync();
+
+            _collisionBakeJob.Value.Complete();
+            _collisionBakeJob = null;
         }
     #else
         private async Awaitable BakeCollisionIfNeededAsync()
         {
-            if (_bakeCollision && _meshId.HasValue)
-            {
-                OnBeforeColliderBuild?.Invoke();
+            if (!_bakeCollision || !_meshId.HasValue)
+                return;
+            
+            OnBeforeColliderBuild?.Invoke();
 
-                _collisionBakeJob?.Complete();
-                _collisionBakeJob = new MeshColliderBakeJob(_meshId.Value).Schedule();
+            _collisionBakeJob?.Complete();
+            _collisionBakeJob = new MeshColliderBakeJob(_meshId.Value).Schedule();
 
-                while (!_collisionBakeJob.Value.IsCompleted)
-                    await Awaitable.NextFrameAsync();
+            while (!_collisionBakeJob.Value.IsCompleted)
+                await Awaitable.NextFrameAsync();
 
-                _collisionBakeJob.Value.Complete();
-                _collisionBakeJob = null;
-            }
+            _collisionBakeJob.Value.Complete();
+            _collisionBakeJob = null;
         }
     #endif
 
-        // InitializeFrustumVolume is based on https://github.com/anaglyphs/lasertag
+        // InitializeFrustumVolume is based on https://github.com/anaglyphs/lasertag,
+        // licensed under the MIT License:
         // MIT License
         // 
         // Copyright (c) 2024 Julian Triveri & Hazel Roeder
