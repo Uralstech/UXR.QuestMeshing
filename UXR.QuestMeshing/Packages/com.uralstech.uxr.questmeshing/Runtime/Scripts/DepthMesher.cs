@@ -211,13 +211,12 @@ namespace Uralstech.UXR.QuestMeshing
 
         protected void Start()
         {
-            if (DepthPreprocessor.Instance == null)
+            if (!DepthPreprocessor.TryGetInstance(out _depthPreprocessor))
             {
                 Debug.LogError($"{nameof(DepthMesher)}: {nameof(DepthPreprocessor)} was not found in the current scene.");
                 enabled = false;
             }
 
-            _depthPreprocessor = DepthPreprocessor.Instance;
             _startCalled = true;
         }
 
