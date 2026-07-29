@@ -299,7 +299,7 @@ namespace Uralstech.UXR.QuestMeshing
                 if (count == 0)
                     return null;
 
-                using ComputeBuffer buffer = new(count, sizeof(float) * 3);
+                using GraphicsBuffer buffer = new(GraphicsBuffer.Target.Structured, count, sizeof(float) * 3);
                 buffer.SetData(_requests);
                 _requests.Clear();
 

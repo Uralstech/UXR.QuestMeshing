@@ -146,13 +146,17 @@ namespace Uralstech.UXR.QuestMeshing
 
         // cached points within viewspace depth frustum 
         // like a 3D lookup table
-        private ComputeBuffer? _frustumVolume;
-        private ComputeBuffer _validVertCounterBuffer;
-        private ComputeBuffer _validTriCounterBuffer;
-        private ComputeBuffer _counterCopyBuffer;
-        private ComputeBuffer _vertexIndexBuffer;
-        private ComputeBuffer _vertexBuffer;
-        private ComputeBuffer _indexBuffer;
+        private GraphicsBuffer? _frustumVolume;
+        private GraphicsBuffer _validVertCounterBuffer;
+        private GraphicsBuffer _validTriCounterBuffer;
+        private GraphicsBuffer _counterCopyBuffer;
+        private GraphicsBuffer _vertexIndexBuffer;
+        private GraphicsBuffer _vertexBuffer;
+        private GraphicsBuffer _indexBuffer;
+        
+        private NativeArray<uint> _triangleCountArray;
+        private NativeArray<Vector3> _verticesArray;
+        private NativeArray<uint> _indicesArray;
         #endregion
 
         private readonly Matrix4x4[] _viewToWorldMatrices = new Matrix4x4[2];
@@ -169,7 +173,6 @@ namespace Uralstech.UXR.QuestMeshing
         private int? _meshId;
 #endif
 
-        private NavMeshDataInstance? _navMeshDataInstance;
         private JobHandle? _collisionBakeJob;
 
         protected override void Awake()
@@ -246,11 +249,6 @@ namespace Uralstech.UXR.QuestMeshing
                 return;
 
             OVRManager.display.RecenteredPose -= Clear;
-            if (_navMeshDataInstance.HasValue)
-            {
-                _navMeshDataInstance.Value.Remove();
-                _navMeshDataInstance = null;
-            }
             
             _collisionBakeJob?.Complete();
             Volume.Release();
@@ -267,6 +265,10 @@ namespace Uralstech.UXR.QuestMeshing
             _vertexIndexBuffer.Dispose();
             _vertexBuffer.Dispose();
             _indexBuffer.Dispose();
+            
+            _triangleCountArray.Dispose();
+            _verticesArray.Dispose();
+            _indicesArray.Dispose();
         }
 
         /// <summary>
@@ -341,64 +343,48 @@ namespace Uralstech.UXR.QuestMeshing
                 await Awaitable.WaitForSecondsAsync(1f / TargetMeshRefreshRateHertz);
             } while (!token.IsCancellationRequested);
         }
-
+        
         private async Awaitable ProcessMeshDataCPU()
         {
-            NativeArray<uint> countBuf = new(1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            ComputeBuffer.CopyCount(_validTriCounterBuffer, _counterCopyBuffer, 0);
+            GraphicsBuffer.CopyCount(_validTriCounterBuffer, _counterCopyBuffer, 0);
 
-            AsyncGPUReadbackRequest vtcResult = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref countBuf, _counterCopyBuffer);
+            AsyncGPUReadbackRequest vtcResult = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref _triangleCountArray, _counterCopyBuffer);
             if (vtcResult.hasError)
             {
                 Debug.LogError($"{nameof(DepthMesher)}: Could not process mesh data due to GPU readback error for valid triangles count.");
-                countBuf.Dispose();
                 return;
             }
 
-            int triangleCount = Mathf.Min((int)countBuf[0], _trianglesBudget);
+            int triangleCount = Mathf.Min((int)_triangleCountArray[0], _trianglesBudget);
             int indexCount = triangleCount * 3;
 
-            ComputeBuffer.CopyCount(_validVertCounterBuffer, _counterCopyBuffer, 0);
-            vtcResult = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref countBuf, _counterCopyBuffer);
+            GraphicsBuffer.CopyCount(_validVertCounterBuffer, _counterCopyBuffer, 0);
+            vtcResult = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref _triangleCountArray, _counterCopyBuffer);
             if (vtcResult.hasError)
             {
                 Debug.LogError($"{nameof(DepthMesher)}: Could not process mesh data due to GPU readback error for valid vertices count.");
-                countBuf.Dispose();
                 return;
             }
 
-            int vertexCount = (int)countBuf[0];
-            countBuf.Dispose();
-
+            int vertexCount = (int)_triangleCountArray[0];
             if (triangleCount == 0)
                 return;
-
-            NativeArray<Vector3> verticesBuf = new(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            NativeArray<uint> indicesBuf = new(indexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-
+            
             (Awaitable<AsyncGPUReadbackRequest> vResultTask, Awaitable<AsyncGPUReadbackRequest> iResultTask) = (
-                AsyncGPUReadback.RequestIntoNativeArrayAsync(ref verticesBuf, _vertexBuffer, sizeof(float) * 3 * vertexCount, 0),
-                AsyncGPUReadback.RequestIntoNativeArrayAsync(ref indicesBuf, _indexBuffer, sizeof(uint) * indexCount, 0)
+                AsyncGPUReadback.RequestIntoNativeArrayAsync(ref _verticesArray, _vertexBuffer, sizeof(float) * 3 * vertexCount, 0),
+                AsyncGPUReadback.RequestIntoNativeArrayAsync(ref _indicesArray, _indexBuffer, sizeof(uint) * indexCount, 0)
             );
 
             (AsyncGPUReadbackRequest vResult, AsyncGPUReadbackRequest iResult) = (await vResultTask, await iResultTask);
             if (vResult.hasError || iResult.hasError)
             {
                 Debug.LogError($"{nameof(DepthMesher)}: Could not process mesh data due to GPU readback error for vertex or index buffer.");
-                verticesBuf.Dispose();
-                indicesBuf.Dispose();
                 return;
             }
 
-            if (_meshColliderConsumer != null && !_bakeCollision)
-                _meshColliderConsumer.sharedMesh = null;
-
-            Mesh!.SetVertexBufferData(verticesBuf, 0, 0, vertexCount, flags: MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
-            Mesh.SetIndexBufferData(indicesBuf, 0, 0, indexCount, flags: MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
+            Mesh!.SetVertexBufferData(_verticesArray, 0, 0, vertexCount, flags: MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
+            Mesh.SetIndexBufferData(_indicesArray, 0, 0, indexCount, flags: MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
             Mesh.SetSubMesh(0, new SubMeshDescriptor(0, indexCount), MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
-
-            verticesBuf.Dispose();
-            indicesBuf.Dispose();
 
             OnMeshDataUpdated?.Invoke();
 
@@ -411,17 +397,12 @@ namespace Uralstech.UXR.QuestMeshing
             {
                 await Awaitable.EndOfFrameAsync();
                 OnBeforeNavMeshBuild?.Invoke();
+
+                if (_navMeshSurface.navMeshData == null)
+                    _navMeshSurface.navMeshData = new NavMeshData();
                 
-                if (_navMeshDataInstance?.valid == true)
-                    _navMeshDataInstance.Value.Remove();
-
-                NavMeshData navMeshData = new();
-                await _navMeshSurface.UpdateNavMesh(navMeshData);
-
-                NavMeshDataInstance navMeshDataInstance = NavMesh.AddNavMeshData(navMeshData);
-                navMeshDataInstance.owner = this;
-
-                _navMeshDataInstance = navMeshDataInstance;
+                _navMeshSurface.AddData();
+                await _navMeshSurface.UpdateNavMesh(_navMeshSurface.navMeshData);
             }
 
             OnMeshRefreshed?.Invoke();
@@ -518,7 +499,7 @@ namespace Uralstech.UXR.QuestMeshing
                 }
             }
 
-            _frustumVolume = new(positions.Count, sizeof(float) * 3);
+            _frustumVolume = new GraphicsBuffer(GraphicsBuffer.Target.Structured, positions.Count, sizeof(float) * 3);
             _frustumVolume.SetData(positions);
 
             _updateVoxelsKernel.SetBuffer(MC_FrustumVolume, _frustumVolume);
@@ -567,11 +548,11 @@ namespace Uralstech.UXR.QuestMeshing
 #endif
 
             int vertexCount = _trianglesBudget * 3;
-            Mesh.SetVertexBufferParams(vertexCount, new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3));
+            Mesh.SetVertexBufferParams(vertexCount, new VertexAttributeDescriptor(VertexAttribute.Position));
             Mesh.SetIndexBufferParams(vertexCount, IndexFormat.UInt32);
 
-            _vertexBuffer = new ComputeBuffer(vertexCount, sizeof(float) * 3, ComputeBufferType.Structured);
-            _indexBuffer = new ComputeBuffer(_trianglesBudget, sizeof(uint) * 3, ComputeBufferType.Structured);
+            _vertexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, vertexCount, sizeof(float) * 3);
+            _indexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _trianglesBudget, sizeof(uint) * 3);
             
             _sfVertexPassKernel.SetBuffer(MC_VertexBuffer, _vertexBuffer);
             _sfTrianglePassKernel.SetBuffer(MC_IndexBuffer, _indexBuffer);
@@ -579,25 +560,29 @@ namespace Uralstech.UXR.QuestMeshing
             _shader.SetFloat(MC_MaxMeshUpdateDistance, _maxMeshUpdateDistance);
             _shader.SetInt(MC_MaxTriangles, _trianglesBudget);
 
-            _vertexIndexBuffer = new ComputeBuffer(_volumeSize.x * _volumeSize.y * _volumeSize.z, sizeof(uint));
+            _vertexIndexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _volumeSize.x * _volumeSize.y * _volumeSize.z, sizeof(uint));
             _viBufferClearKernel.SetBuffer(MC_VertexIndexBuffer, _vertexIndexBuffer);
             _sfVertexPassKernel.SetBuffer(MC_VertexIndexBuffer, _vertexIndexBuffer);
             _sfTrianglePassKernel.SetBuffer(MC_VertexIndexBuffer, _vertexIndexBuffer);
             
             _viBufferClearKernel.Dispatch(_vertexIndexBuffer.count);
 
+            _triangleCountArray = new NativeArray<uint>(1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            _verticesArray = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            _indicesArray = new NativeArray<uint>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            
             if (_meshFilterConsumer != null)
                 _meshFilterConsumer.mesh = Mesh;
         }
 
         private void InitializeCounters()
         {
-            _counterCopyBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Raw);
+            _counterCopyBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 1, sizeof(uint));
 
-            _validVertCounterBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Counter);
+            _validVertCounterBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Counter ,1, sizeof(uint));
             _sfVertexPassKernel.SetBuffer(MC_ValidVertexCounter, _validVertCounterBuffer);
 
-            _validTriCounterBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Counter);
+            _validTriCounterBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Counter, 1, sizeof(uint));
             _sfTrianglePassKernel.SetBuffer(MC_ValidTriangleCounter, _validTriCounterBuffer);
         }
     }
