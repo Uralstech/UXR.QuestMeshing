@@ -362,7 +362,7 @@ namespace Uralstech.UXR.QuestMeshing
             if (!IsDataAvailable)
             {
                 // Callback shouldn't block Application.onBeforeRender
-                _ = DeferredOnDataAvailableCall();
+                DeferredOnDataAvailableCall();
 
                 ToggleShaderKeywords(true);
                 IsDataAvailable = true;
@@ -372,7 +372,7 @@ namespace Uralstech.UXR.QuestMeshing
                 RenderSoftOcclusion();
         }
 
-        private async Awaitable DeferredOnDataAvailableCall()
+        private async void DeferredOnDataAvailableCall()
         {
             try
             {
