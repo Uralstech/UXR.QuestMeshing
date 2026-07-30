@@ -42,10 +42,16 @@ uniform uint3 VolumeSize;
 uniform float MetersPerVoxel;
 
 uniform StructuredBuffer<float3> FrustumVolume;
-uniform float4x4 ViewToWorldMatrices[2];
-uniform float4x4 WorldToTrackingMatrix;
-uniform float4x4 TrackingToWorldMatrix;
-uniform float3 UserWorldPos;
+
+cbuffer FrustumUpdateData
+{
+	float4x4 ViewToWorldMatrices[2];
+	float4x4 WorldToTrackingMatrix;
+	float4x4 TrackingToWorldMatrix;
+	float3 UserWorldPos;
+	
+	float FrustumUpdateDataPadding;
+}
 
 uniform uint MaxTriangles;
 RWStructuredBuffer<float3> VertexBuffer;
