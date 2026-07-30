@@ -60,9 +60,6 @@ RWStructuredBuffer<uint> ValidTriangleCounter;
 RWStructuredBuffer<uint> ValidVertexCounter;
 
 #define ISO_LEVEL 0.0
-#define USER_TOP 0.2 
-#define USER_BOTTOM 1.7
-#define USER_RADIUS 0.5
 #define MIN_DOT 0.3
 
 float3 EyePosition()
@@ -87,12 +84,6 @@ uint3 WorldToVoxelPos(float3 pos)
 	return clamp(uint3(pos), 0, VolumeSize - 1);
 }
 
-bool IsInUserPos(float3 pos) {
-    return distance(pos.xz, UserWorldPos.xz) < USER_RADIUS
-            && pos.y < UserWorldPos.y + USER_TOP
-            && pos.y > UserWorldPos.y - USER_BOTTOM;
-}
-
 #pragma kernel Clear
 
 [numthreads(8, 2, 8)]
@@ -107,10 +98,6 @@ void Clear(uint3 id: SV_DispatchThreadID)
 void UpdateVoxels(uint i: SV_DispatchThreadID)
 {
     const float3 fineVoxelWorldPos = mul(ViewToWorldMatrices[0], float4(FrustumVolume[i], 1)).xyz;
-    if (IsInUserPos(fineVoxelWorldPos)) {
-        return;
-    }
-
     const uint3 id = WorldToVoxelPos(fineVoxelWorldPos);
 
     const float3 eyePos = EyePosition();
@@ -240,7 +227,7 @@ void SurfaceNetsVertexPass(uint3 id : SV_DispatchThreadID)
     * center if first computed in local voxel grid coordinates and will then be
     * mapped to the mesh's coordinates later.
     */
-    float totalIntersections = 0;
+    uint totalIntersections = 0;
     float3 addedIntersections = float3(0, 0, 0);
     for (i = 0; i < 12; ++i) {
         const uint2 edge = edgeTable[i];
@@ -269,7 +256,7 @@ void SurfaceNetsVertexPass(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    const float3 intersectionsCenter = addedIntersections / totalIntersections;
+    const float3 intersectionsCenter = addedIntersections / (float)totalIntersections;
     const float3 vertexPos = VoxelToWorldPos(intersectionsCenter);
 
     bool isDepthVerified = false;
