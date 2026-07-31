@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Volume population based on: https://github.com/anaglyphs/lasertag
+// Volume population and parts of SurfaceNetsVertexPass based on: https://github.com/anaglyphs/lasertag,
+// licensed under the MIT License:
 // MIT License
 // 
 // Copyright (c) 2024 Julian Triveri & Hazel Roeder
@@ -119,7 +120,8 @@ void UpdateVoxels(uint i: SV_DispatchThreadID)
     }
 }
 
-// Surface Nets implementation based on: https://github.com/Q-Minh/naive-surface-nets/
+// Surface Nets implementation based on: https://github.com/Q-Minh/naive-surface-nets/,
+// licensed under the MIT License:
 // MIT License
 // 
 // Copyright (c) 2020 Quoc-Minh Ton-That
