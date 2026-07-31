@@ -49,7 +49,6 @@ namespace Uralstech.UXR.QuestMeshing
         private static readonly int MC_ValidTriangleCounter = Shader.PropertyToID("ValidTriangleCounter");
         private static readonly int MC_ValidVertexCounter = Shader.PropertyToID("ValidVertexCounter");
         private static readonly int MC_VertexIndexBuffer = Shader.PropertyToID("VertexIndexBuffer");
-        private static readonly int MC_MaxMeshUpdateDistance = Shader.PropertyToID("MaxMeshUpdateDistance");
 #pragma warning restore IDE1006 // Naming Styles
         #endregion
         
@@ -62,18 +61,16 @@ namespace Uralstech.UXR.QuestMeshing
         	public readonly Matrix4x4 ViewToWorldMatrix1;
         	public readonly Matrix4x4 WorldToTrackingMatrix;
         	public readonly Matrix4x4 TrackingToWorldMatrix;
-        	public readonly Vector3 UserWorldPos;
         	
         	private readonly float _padding;
 
             public FrustumUpdateData(in Matrix4x4 viewToWorldMatrix0, in Matrix4x4 viewToWorldMatrix1,
-                in Matrix4x4 worldToTrackingMatrix, in Matrix4x4 trackingToWorldMatrix, in Vector3 userWorldPos) : this()
+                in Matrix4x4 worldToTrackingMatrix, in Matrix4x4 trackingToWorldMatrix) : this()
             {
                 ViewToWorldMatrix0 = viewToWorldMatrix0;
                 ViewToWorldMatrix1 = viewToWorldMatrix1;
                 WorldToTrackingMatrix = worldToTrackingMatrix;
                 TrackingToWorldMatrix = trackingToWorldMatrix;
-                UserWorldPos = userWorldPos;
             }
         }
     
@@ -123,9 +120,6 @@ namespace Uralstech.UXR.QuestMeshing
 
         [SerializeField, Min(0.0f), Tooltip("The maximum distance from the camera at which depth data is considered for meshing.")]
         private float _maxViewDistance = 4f;
-
-        [SerializeField, Min(0.0f), Tooltip("The maximum distance from the user's position to update the mesh (optimizes for local changes).")]
-        private float _maxMeshUpdateDistance = 4f;
 
         [SerializeField, Tooltip("The maximum number of triangles allowed in the generated mesh (caps GPU memory usage).")]
         private int _trianglesBudget = 64 * 64 * 64;
@@ -194,7 +188,6 @@ namespace Uralstech.UXR.QuestMeshing
 
         private CancellationTokenSource? _updateCancellation;
         private DepthPreprocessor? _depthPreprocessor;
-        private Transform _centerEyeAnchor;
         private Transform _trackingSpace;
         private bool _awakeSuccessful;
         private bool _startCalled;
@@ -232,7 +225,6 @@ namespace Uralstech.UXR.QuestMeshing
                 _bakeNavMesh = false;
             }
 
-            _centerEyeAnchor = _cameraRig.centerEyeAnchor;
             _trackingSpace = _cameraRig.trackingSpace;
 
             InitializeKernels();
@@ -341,8 +333,7 @@ namespace Uralstech.UXR.QuestMeshing
                     _trackingSpace.localToWorldMatrix * preprocessor.DepthViewMatrices[0].inverse,
                     _trackingSpace.localToWorldMatrix * preprocessor.DepthViewMatrices[1].inverse,
                     _trackingSpace.worldToLocalMatrix,
-                    _trackingSpace.localToWorldMatrix,
-                    _centerEyeAnchor.position
+                    _trackingSpace.localToWorldMatrix
                 );
 
                 _frustumUpdateDataBuffer.UnlockBufferAfterWrite<FrustumUpdateData>(1);
@@ -699,7 +690,6 @@ namespace Uralstech.UXR.QuestMeshing
             _sfVertexPassKernel.SetBuffer(MC_VertexBuffer, _vertexBuffer);
             _sfTrianglePassKernel.SetBuffer(MC_IndexBuffer, _indexBuffer);
 
-            _shader.SetFloat(MC_MaxMeshUpdateDistance, _maxMeshUpdateDistance);
             _shader.SetInt(MC_MaxTriangles, _trianglesBudget);
 
             _vertexIndexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _volumeSize.x * _volumeSize.y * _volumeSize.z, sizeof(uint));

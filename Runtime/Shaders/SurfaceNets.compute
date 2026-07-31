@@ -48,9 +48,6 @@ cbuffer FrustumUpdateData
 	float4x4 ViewToWorldMatrices[2];
 	float4x4 WorldToTrackingMatrix;
 	float4x4 TrackingToWorldMatrix;
-	float3 UserWorldPos;
-	
-	float FrustumUpdateDataPadding;
 }
 
 uniform uint MaxTriangles;
@@ -59,8 +56,8 @@ RWStructuredBuffer<uint3> IndexBuffer;
 RWStructuredBuffer<uint> ValidTriangleCounter;
 RWStructuredBuffer<uint> ValidVertexCounter;
 
-#define ISO_LEVEL 0.0
-#define MIN_DOT 0.3
+#define ISO_LEVEL	(0.0f)
+#define MIN_DOT		(0.3f)
 
 float3 EyePosition()
 {
@@ -149,13 +146,12 @@ void UpdateVoxels(uint i: SV_DispatchThreadID)
 #pragma kernel SurfaceNetsTrianglePass
 #pragma kernel VertexIndexBufferClear
 
-#define INVALID_VERTEX  0xffffffff
-#define INVALID_DEPTH   0xfffffffe
-#define INVALID_SCALAR  -100.0f
+#define INVALID_VERTEX  (0xffffffff)
+#define INVALID_DEPTH   (0xfffffffe)
+#define INVALID_SCALAR  (-100.0f)
 
 // Temporary buffer to store vertex indices per voxel cell
 RWStructuredBuffer<uint> VertexIndexBuffer;
-uniform float MaxMeshUpdateDistance;
 
 // the edges provide indices to the corresponding current cube's vertices (voxel corners)
 static const uint2 edgeTable[12] =
@@ -228,6 +224,7 @@ void SurfaceNetsVertexPass(uint3 id : SV_DispatchThreadID)
     * mapped to the mesh's coordinates later.
     */
     uint totalIntersections = 0;
+	uint totalBadIntersections = 0;
     float3 addedIntersections = float3(0, 0, 0);
     for (i = 0; i < 12; ++i) {
         const uint2 edge = edgeTable[i];
@@ -236,60 +233,30 @@ void SurfaceNetsVertexPass(uint3 id : SV_DispatchThreadID)
     	const float s1 = cornerValues[edge.x];
     	const float s2 = cornerValues[edge.y];
 
-    	if ((s1 >= ISO_LEVEL) == (s2 >= ISO_LEVEL) // Bipolarity check
-            || s1 == INVALID_SCALAR || s2 == INVALID_SCALAR)
-    		continue;
-
     	// get points p1, p2 of the edge e in grid coordinates
     	const float3 p1 = cornerIds[edge.x];
     	const float3 p2 = cornerIds[edge.y];
-        
+    	
     	// perform linear interpolation using implicit function
     	// values at vertices
     	const float t = (ISO_LEVEL - s1) / (s2 - s1);
-    	addedIntersections += p1 + t * (p2 - p1);
-    	totalIntersections += 1;
+    	
+    	if ((s1 >= ISO_LEVEL) != (s2 >= ISO_LEVEL) // Bipolarity check
+            && s1 != INVALID_SCALAR && s2 != INVALID_SCALAR)
+    	{
+    		addedIntersections += p1 + t * float3(p2 - p1);
+    		totalIntersections++;
+    		
+    		if (s1 == 1 || s2 == 1)
+    			totalBadIntersections++;
+    	}
     }
 
-    if (totalIntersections == 0) {
+	const float3 intersectionsCenter = addedIntersections / (float)totalIntersections;
+	const float3 vertexPos = VoxelToWorldPos(intersectionsCenter);
+
+    if (totalIntersections < 3 || totalIntersections == totalBadIntersections) {
         VertexIndexBuffer[GetVIBufferIndex(id)] = INVALID_VERTEX;
-        return;
-    }
-
-    const float3 intersectionsCenter = addedIntersections / (float)totalIntersections;
-    const float3 vertexPos = VoxelToWorldPos(intersectionsCenter);
-
-    bool isDepthVerified = false;
-    if (distance(vertexPos, UserWorldPos) <= MaxMeshUpdateDistance)
-    {
-        // Get screen space coords of vertex
-        const float2 vertexNDC = WorldToNDCPos(vertexPos).xy;
-
-        // Validate coords
-        if (all(vertexNDC >= 0.0) && all(vertexNDC <= 1.0)) {
-            const float3 depthPos = SampleDepthPosition(vertexNDC);
-
-            // We don't need to calculate which room the vertex is in if it's not occluded by anything
-            if (distance(depthPos, vertexPos) <= MetersPerVoxel) {
-                isDepthVerified = true;
-            } else
-            {
-                // Estimate depth position directly in front of the vertex position, by setting the Y of the sampled
-                // depth position to the same as in the vertex position. This is to account for high camera angles
-                // distorting the distances between the vertex position and the "real" depth position.
-                const float3 adjustedDepthPos = float3(depthPos.x, vertexPos.y, depthPos.z);
-
-                // If the distance between the adjusted position and vertex is less than MetersPerVoxel,
-                // it's likely to be in a wall. If it is a larger value, it's likely to be in another room.
-                if (distance(adjustedDepthPos, vertexPos) <= MetersPerVoxel * 2.0f) {
-                    VertexIndexBuffer[GetVIBufferIndex(id)] = INVALID_DEPTH;
-                    return;
-                }
-            }
-        }
-    }
-    
-    if (!isDepthVerified && VertexIndexBuffer[GetVIBufferIndex(id)] == INVALID_DEPTH) {
         return;
     }
 
