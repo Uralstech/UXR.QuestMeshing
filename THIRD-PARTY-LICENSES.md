@@ -4,10 +4,10 @@ This project, UXR.QuestMeshing, is licensed under the Apache License 2.0. See th
 
 The following third-party components are included or adapted in this project. Each is licensed under the MIT License, with the relevant copyright notices and full license texts provided below. Attribution is given in the source code where applicable.
 
-## lasertag (Frustum Volume Initialization and TSDF Volume Population)
+## lasertag (Frustum Volume Initialization, TSDF Volume Population, and parts of SurfaceNetsVertexPass)
 
 **Source**: https://github.com/anaglyphs/lasertag
-**Usage**: Adapted for frustum volume point generation in `DepthMesher.InitializeFrustumVolume` and TSDF volume population in kernels of `SurfaceNets.compute` (`Clear`, `UpdateVoxels`).
+**Usage**: Adapted for frustum volume point generation in `DepthMesher.InitializeFrustumVolume`, TSDF volume population in kernels of `SurfaceNets.compute` (`Clear`, `UpdateVoxels`) and parts of SurfaceNetsVertexPass in `SurfaceNets.compute`.
 **License**: MIT License
 **Copyright**: Copyright (c) 2024 Julian Triveri & Hazel Roeder
 

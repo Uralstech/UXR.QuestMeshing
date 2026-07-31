@@ -14,6 +14,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Unity.AI.Navigation;
@@ -40,29 +41,53 @@ namespace Uralstech.UXR.QuestMeshing
         private static readonly int MC_Volume = Shader.PropertyToID("Volume");
         private static readonly int MC_MetersPerVoxel = Shader.PropertyToID("MetersPerVoxel");
         private static readonly int MC_FrustumVolume = Shader.PropertyToID("FrustumVolume");
-        private static readonly int MC_ViewToWorldMatrices = Shader.PropertyToID("ViewToWorldMatrices");
-        private static readonly int MC_UserWorldPos = Shader.PropertyToID("UserWorldPos");
-        private static readonly int MC_WorldToTrackingMatrix = Shader.PropertyToID("WorldToTrackingMatrix");
-        private static readonly int MC_TrackingToWorldMatrix = Shader.PropertyToID("TrackingToWorldMatrix");
+        private static readonly int MC_FrustumUpdateData = Shader.PropertyToID("FrustumUpdateData");
         private static readonly int MC_MaxTriangles = Shader.PropertyToID("MaxTriangles");
         private static readonly int MC_VertexBuffer = Shader.PropertyToID("VertexBuffer");
         private static readonly int MC_IndexBuffer = Shader.PropertyToID("IndexBuffer");
         private static readonly int MC_ValidTriangleCounter = Shader.PropertyToID("ValidTriangleCounter");
         private static readonly int MC_ValidVertexCounter = Shader.PropertyToID("ValidVertexCounter");
         private static readonly int MC_VertexIndexBuffer = Shader.PropertyToID("VertexIndexBuffer");
-        private static readonly int MC_MaxMeshUpdateDistance = Shader.PropertyToID("MaxMeshUpdateDistance");
 #pragma warning restore IDE1006 // Naming Styles
         #endregion
-    
+        
+        [StructLayout(LayoutKind.Sequential)]
+        private readonly struct FrustumUpdateData
+        {
+            public static readonly int Size = Marshal.SizeOf<FrustumUpdateData>();
+            
+            public readonly Matrix4x4 ViewToWorldMatrix0;
+        	public readonly Matrix4x4 ViewToWorldMatrix1;
+        	public readonly Matrix4x4 WorldToTrackingMatrix;
+        	public readonly Matrix4x4 TrackingToWorldMatrix;
+        	
+        	private readonly float _padding;
+
+            public FrustumUpdateData(in Matrix4x4 viewToWorldMatrix0, in Matrix4x4 viewToWorldMatrix1,
+                in Matrix4x4 worldToTrackingMatrix, in Matrix4x4 trackingToWorldMatrix) : this()
+            {
+                ViewToWorldMatrix0 = viewToWorldMatrix0;
+                ViewToWorldMatrix1 = viewToWorldMatrix1;
+                WorldToTrackingMatrix = worldToTrackingMatrix;
+                TrackingToWorldMatrix = trackingToWorldMatrix;
+            }
+        }
+
+        private const MeshColliderCookingOptions PhysicsDefaultCookingOptions =
+            MeshColliderCookingOptions.CookForFasterSimulation
+            | MeshColliderCookingOptions.EnableMeshCleaning
+            | MeshColliderCookingOptions.WeldColocatedVertices
+            | MeshColliderCookingOptions.UseFastMidphase;
+
         /// <summary>
         /// The TSDF volume used for the surface nets operation.
         /// </summary>
-        public RenderTexture Volume { get; private set; }
+        public RenderTexture Volume { get; private set; } = null!;
 
         /// <summary>
         /// The generated mesh.
         /// </summary>
-        public Mesh Mesh { get; private set; }
+        public Mesh Mesh { get; private set; } = null!;
 
         /// <summary>
         /// Invoked after the <see cref="Mesh"/> is updated and all optional collision and NavMesh baking completes.
@@ -87,7 +112,7 @@ namespace Uralstech.UXR.QuestMeshing
         #region Editor Settings
         [Header("Mesher Settings")]
         [SerializeField, Tooltip("The compute shader containing kernels for volume updates and surface nets meshing.")]
-        private ComputeShader _shader;
+        private ComputeShader _shader = null!;
 
         [SerializeField, Tooltip("The dimensions of the TSDF volume grid (width x height x depth). Higher resolutions will increase scanned volume but increase memory usage and compute cost.")]
         private Vector3Int _volumeSize = new(256, 64, 256);
@@ -101,9 +126,6 @@ namespace Uralstech.UXR.QuestMeshing
         [SerializeField, Min(0.0f), Tooltip("The maximum distance from the camera at which depth data is considered for meshing.")]
         private float _maxViewDistance = 4f;
 
-        [SerializeField, Min(0.0f), Tooltip("The maximum distance from the user's position to update the mesh (optimizes for local changes).")]
-        private float _maxMeshUpdateDistance = 4f;
-
         [SerializeField, Tooltip("The maximum number of triangles allowed in the generated mesh (caps GPU memory usage).")]
         private int _trianglesBudget = 64 * 64 * 64;
 
@@ -116,14 +138,14 @@ namespace Uralstech.UXR.QuestMeshing
         public float TargetMeshRefreshRateHertz = 1;
 
         [SerializeField, Tooltip("The OVRCameraRig providing the eye poses and tracking space. If not assigned, auto-finds via FindAnyObjectByType.")]
-        private OVRCameraRig _cameraRig;
+        private OVRCameraRig _cameraRig = null!;
 
         [Space, Header("Mesh Consumers")]
         [SerializeField, Tooltip("The MeshFilter to assign the generated mesh to for rendering.")]
-        private MeshFilter _meshFilterConsumer;
+        private MeshFilter? _meshFilterConsumer;
 
         [SerializeField, Tooltip("The MeshCollider to assign the generated mesh to for physics collisions.")]
-        private MeshCollider _meshColliderConsumer;
+        private MeshCollider? _meshColliderConsumer;
 
         [Space, Header("Collider Baking Options")]
         [SerializeField, Tooltip("If enabled, bakes the mesh into the MeshCollider for optimized physics queries.")]
@@ -134,7 +156,7 @@ namespace Uralstech.UXR.QuestMeshing
         private bool _bakeNavMesh = true;
 
         [SerializeField, Tooltip("The NavMeshSurface component to bake the mesh into.")]
-        private NavMeshSurface _navMeshSurface;
+        private NavMeshSurface? _navMeshSurface;
         
         [SerializeField, Tooltip("Uses an optimized NavMesh baking path that updates the NavMesh using only the generated depth mesh. " +
                                  "This can be faster than a full NavMeshSurface bake, but all other NavMesh build sources are ignored.")]
@@ -156,23 +178,22 @@ namespace Uralstech.UXR.QuestMeshing
         // cached points within viewspace depth frustum 
         // like a 3D lookup table
         private GraphicsBuffer? _frustumVolume;
-        private GraphicsBuffer _validVertCounterBuffer;
-        private GraphicsBuffer _validTriCounterBuffer;
-        private GraphicsBuffer _counterCopyBuffer;
-        private GraphicsBuffer _vertexIndexBuffer;
-        private GraphicsBuffer _vertexBuffer;
-        private GraphicsBuffer _indexBuffer;
+        private GraphicsBuffer _frustumUpdateDataBuffer = null!;
+        private GraphicsBuffer _validVertCounterBuffer  = null!;
+        private GraphicsBuffer _validTriCounterBuffer   = null!;
+        private GraphicsBuffer _counterCopyBuffer       = null!;
+        private GraphicsBuffer _vertexIndexBuffer       = null!;
+        private GraphicsBuffer _vertexBuffer            = null!;
+        private GraphicsBuffer _indexBuffer             = null!;
         
-        private NativeArray<uint> _triangleCountArray;
+        private NativeArray<uint> _resourceCountArray;
         private NativeArray<Vector3> _verticesArray;
         private NativeArray<uint> _indicesArray;
         #endregion
 
-        private readonly Matrix4x4[] _viewToWorldMatrices = new Matrix4x4[2];
         private CancellationTokenSource? _updateCancellation;
         private DepthPreprocessor? _depthPreprocessor;
-        private Transform _centerEyeAnchor;
-        private Transform _trackingSpace;
+        private Transform _trackingSpace = null!;
         private bool _awakeSuccessful;
         private bool _startCalled;
 
@@ -183,6 +204,7 @@ namespace Uralstech.UXR.QuestMeshing
 #endif
 
         private JobHandle? _collisionBakeJob;
+        private bool _warnedConsumerPositions;
 
         protected override void Awake()
         {
@@ -209,13 +231,13 @@ namespace Uralstech.UXR.QuestMeshing
                 _bakeNavMesh = false;
             }
 
-            _centerEyeAnchor = _cameraRig.centerEyeAnchor;
             _trackingSpace = _cameraRig.trackingSpace;
 
             InitializeKernels();
             InitializeVolume();
             InitializeMeshData();
             InitializeCounters();
+            InitializeFrustumUpdateDataBuffer();
                     
             OVRManager.display.RecenteredPose += Clear;
             _awakeSuccessful = true;
@@ -267,6 +289,8 @@ namespace Uralstech.UXR.QuestMeshing
 
             _frustumVolume?.Dispose();
             _frustumVolume = null;
+            
+            _frustumUpdateDataBuffer.Dispose();
 
             _validVertCounterBuffer.Dispose();
             _validTriCounterBuffer.Dispose();
@@ -275,7 +299,7 @@ namespace Uralstech.UXR.QuestMeshing
             _vertexBuffer.Dispose();
             _indexBuffer.Dispose();
             
-            _triangleCountArray.Dispose();
+            _resourceCountArray.Dispose();
             _verticesArray.Dispose();
             _indicesArray.Dispose();
         }
@@ -286,8 +310,7 @@ namespace Uralstech.UXR.QuestMeshing
         public void Clear()
         {
             _volumeClearKernel.Dispatch(_volumeSize);
-            if (_vertexIndexBuffer != null)
-                _viBufferClearKernel.Dispatch(_vertexIndexBuffer.count);
+            _viBufferClearKernel.Dispatch(_vertexIndexBuffer.count);
         }
 
         private async Task RunVolumeUpdateLoopAsync(CancellationToken token)
@@ -296,7 +319,7 @@ namespace Uralstech.UXR.QuestMeshing
                 await Awaitable.NextFrameAsync();
 
             DepthPreprocessor? preprocessor = _depthPreprocessor;
-            if (preprocessor == null)
+            if (preprocessor == null || Mathf.Approximately(TargetVolumeUpdateRateHertz, 0f))
                 return;
 
             do
@@ -310,17 +333,17 @@ namespace Uralstech.UXR.QuestMeshing
                 if (_frustumVolume == null)
                     InitializeFrustumVolume(preprocessor);
 
-                _viewToWorldMatrices[0] = _trackingSpace.localToWorldMatrix * preprocessor.DepthViewMatrices[0].inverse;
-                _viewToWorldMatrices[1] = _trackingSpace.localToWorldMatrix * preprocessor.DepthViewMatrices[1].inverse;
-                _shader.SetMatrixArray(MC_ViewToWorldMatrices, _viewToWorldMatrices);
+                NativeArray<FrustumUpdateData> strideParams = _frustumUpdateDataBuffer.LockBufferForWrite<FrustumUpdateData>(0, 1);
+                strideParams[0] = new FrustumUpdateData(
+                    _trackingSpace.localToWorldMatrix * preprocessor.DepthViewMatrices[0].inverse,
+                    _trackingSpace.localToWorldMatrix * preprocessor.DepthViewMatrices[1].inverse,
+                    _trackingSpace.worldToLocalMatrix,
+                    _trackingSpace.localToWorldMatrix
+                );
 
-                Vector3 playerPos = _centerEyeAnchor.position;
-                _shader.SetFloats(MC_UserWorldPos, playerPos.x, playerPos.y, playerPos.z);
-
-                _shader.SetMatrix(MC_WorldToTrackingMatrix, _trackingSpace.worldToLocalMatrix);
-                _shader.SetMatrix(MC_TrackingToWorldMatrix, _trackingSpace.localToWorldMatrix);
-
+                _frustumUpdateDataBuffer.UnlockBufferAfterWrite<FrustumUpdateData>(1);
                 _updateVoxelsKernel.Dispatch(_frustumVolume!.count);
+                
                 await Awaitable.WaitForSecondsAsync(1f / TargetVolumeUpdateRateHertz);
             } while (!token.IsCancellationRequested);
         }
@@ -331,7 +354,7 @@ namespace Uralstech.UXR.QuestMeshing
                 await Awaitable.NextFrameAsync();
                 
             DepthPreprocessor? preprocessor = _depthPreprocessor;
-            if (preprocessor == null)
+            if (preprocessor == null || Mathf.Approximately(TargetMeshRefreshRateHertz, 0f))
                 return;
 
             do
@@ -342,11 +365,11 @@ namespace Uralstech.UXR.QuestMeshing
                     continue;
                 }
                 
-                _validTriCounterBuffer!.SetCounterValue(0);
-                _validVertCounterBuffer!.SetCounterValue(0);
+                _validTriCounterBuffer.SetCounterValue(0);
+                _validVertCounterBuffer.SetCounterValue(0);
                 _sfVertexPassKernel.Dispatch(_volumeSize);
                 _sfTrianglePassKernel.Dispatch(_volumeSize);
-                Mesh!.bounds = new Bounds(_trackingSpace.TransformPoint(Vector3.zero), (Vector3)_volumeSize * _metersPerVoxel);
+                Mesh.bounds = new Bounds(_trackingSpace.TransformPoint(Vector3.zero), (Vector3)_volumeSize * _metersPerVoxel);
 
                 await ProcessMeshDataCPU();
                 await Awaitable.WaitForSecondsAsync(1f / TargetMeshRefreshRateHertz);
@@ -357,25 +380,25 @@ namespace Uralstech.UXR.QuestMeshing
         {
             GraphicsBuffer.CopyCount(_validTriCounterBuffer, _counterCopyBuffer, 0);
 
-            AsyncGPUReadbackRequest vtcResult = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref _triangleCountArray, _counterCopyBuffer);
+            AsyncGPUReadbackRequest vtcResult = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref _resourceCountArray, _counterCopyBuffer);
             if (vtcResult.hasError)
             {
                 Debug.LogError($"{nameof(DepthMesher)}: Could not process mesh data due to GPU readback error for valid triangles count.");
                 return;
             }
 
-            int triangleCount = Mathf.Min((int)_triangleCountArray[0], _trianglesBudget);
+            int triangleCount = Mathf.Min((int)_resourceCountArray[0], _trianglesBudget);
             int indexCount = triangleCount * 3;
 
             GraphicsBuffer.CopyCount(_validVertCounterBuffer, _counterCopyBuffer, 0);
-            vtcResult = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref _triangleCountArray, _counterCopyBuffer);
+            vtcResult = await AsyncGPUReadback.RequestIntoNativeArrayAsync(ref _resourceCountArray, _counterCopyBuffer);
             if (vtcResult.hasError)
             {
                 Debug.LogError($"{nameof(DepthMesher)}: Could not process mesh data due to GPU readback error for valid vertices count.");
                 return;
             }
 
-            int vertexCount = (int)_triangleCountArray[0];
+            int vertexCount = (int)_resourceCountArray[0];
             if (triangleCount == 0)
                 return;
             
@@ -391,24 +414,23 @@ namespace Uralstech.UXR.QuestMeshing
                 return;
             }
 
-            Mesh!.SetVertexBufferData(_verticesArray, 0, 0, vertexCount, flags: MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
+            Mesh.SetVertexBufferData(_verticesArray, 0, 0, vertexCount, flags: MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
             Mesh.SetIndexBufferData(_indicesArray, 0, 0, indexCount, flags: MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
             Mesh.SetSubMesh(0, new SubMeshDescriptor(0, indexCount), MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
 
+            UpdateMeshFilterIfNeeded();
             OnMeshDataUpdated?.Invoke();
 
             await BakeCollisionIfNeededAsync();
-
-            if (_meshColliderConsumer != null)
-                _meshColliderConsumer.sharedMesh = Mesh;
-
+            UpdateMeshColliderIfNeeded();
+            
             await BakeNavMeshIfNeededAsync();
             OnMeshRefreshed?.Invoke();
         }
 
         private async Awaitable BakeNavMeshIfNeededAsync()
         {
-            if (!_bakeNavMesh)
+            if (!_bakeNavMesh || _navMeshSurface == null)
                 return;
             
             await Awaitable.EndOfFrameAsync();
@@ -522,6 +544,28 @@ namespace Uralstech.UXR.QuestMeshing
             return new Bounds(worldPosition, worldSize);
         }
 
+        private void UpdateMeshColliderIfNeeded()
+        {
+            if (_meshColliderConsumer == null)
+                return;
+
+            if (!_warnedConsumerPositions
+                && _meshColliderConsumer.transform.position != Vector3.zero)
+            {
+                Debug.LogWarning($"{nameof(DepthMesher)}: Mesh filter and collider consumers must be at world origin for correct alignment.");
+                _warnedConsumerPositions = true;
+            }
+            
+            if (_bakeCollision && _meshColliderConsumer.cookingOptions != PhysicsDefaultCookingOptions)
+            {
+                Debug.LogWarning($"{nameof(DepthMesher)}: Mesh collider consumer updates are disabled because the consumer is using non-default cooking options.");
+                _meshColliderConsumer = null;
+                return;
+            }
+                
+            _meshColliderConsumer.sharedMesh = Mesh;
+        }
+
     #if UNITY_6000_3_OR_NEWER
         private async Awaitable BakeCollisionIfNeededAsync()
         {
@@ -557,6 +601,21 @@ namespace Uralstech.UXR.QuestMeshing
             _collisionBakeJob = null;
         }
     #endif
+
+        private void UpdateMeshFilterIfNeeded()
+        {
+            if (_meshFilterConsumer == null)
+                return;
+            
+            if (!_warnedConsumerPositions
+                && _meshFilterConsumer.transform.position != Vector3.zero)
+            {
+                Debug.LogWarning($"{nameof(DepthMesher)}: Mesh filter and collider consumers must be at world origin for correct alignment.");
+                _warnedConsumerPositions = true;
+            }
+            
+            _meshFilterConsumer.mesh = Mesh;
+        }
 
         // InitializeFrustumVolume is based on https://github.com/anaglyphs/lasertag,
         // licensed under the MIT License:
@@ -672,7 +731,6 @@ namespace Uralstech.UXR.QuestMeshing
             _sfVertexPassKernel.SetBuffer(MC_VertexBuffer, _vertexBuffer);
             _sfTrianglePassKernel.SetBuffer(MC_IndexBuffer, _indexBuffer);
 
-            _shader.SetFloat(MC_MaxMeshUpdateDistance, _maxMeshUpdateDistance);
             _shader.SetInt(MC_MaxTriangles, _trianglesBudget);
 
             _vertexIndexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _volumeSize.x * _volumeSize.y * _volumeSize.z, sizeof(uint));
@@ -682,12 +740,9 @@ namespace Uralstech.UXR.QuestMeshing
             
             _viBufferClearKernel.Dispatch(_vertexIndexBuffer.count);
 
-            _triangleCountArray = new NativeArray<uint>(1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+            _resourceCountArray = new NativeArray<uint>(1, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             _verticesArray = new NativeArray<Vector3>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             _indicesArray = new NativeArray<uint>(vertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            
-            if (_meshFilterConsumer != null)
-                _meshFilterConsumer.mesh = Mesh;
         }
 
         private void InitializeCounters()
@@ -699,6 +754,12 @@ namespace Uralstech.UXR.QuestMeshing
 
             _validTriCounterBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Counter, 1, sizeof(uint));
             _sfTrianglePassKernel.SetBuffer(MC_ValidTriangleCounter, _validTriCounterBuffer);
+        }
+
+        private void InitializeFrustumUpdateDataBuffer()
+        {
+            _frustumUpdateDataBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Raw, GraphicsBuffer.UsageFlags.LockBufferForWrite, 1, FrustumUpdateData.Size);
+            _shader.SetConstantBuffer(MC_FrustumUpdateData, _frustumUpdateDataBuffer, 0, FrustumUpdateData.Size);
         }
     }
 }
