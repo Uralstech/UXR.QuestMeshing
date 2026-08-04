@@ -103,11 +103,21 @@ namespace Uralstech.UXR.QuestMeshing
         /// Invoked after the <see cref="Mesh"/> is updated and before optional collision baking is started.
         /// </summary>
         public event Action? OnBeforeColliderBuild;
+        
+        /// <summary>
+        /// Invoked after the optional collision baking is completed.
+        /// </summary>
+        public event Action? OnAfterColliderBuild;
 
         /// <summary>
         /// Invoked after the <see cref="Mesh"/> is updated and before optional NavMesh baking is started.
         /// </summary>
         public event Action? OnBeforeNavMeshBuild;
+        
+        /// <summary>
+        /// Invoked after the optional NavMesh baking is completed.
+        /// </summary>
+        public event Action? OnAfterNavMeshBuild;
 
         #region Editor Settings
         [Header("Mesher Settings")]
@@ -423,13 +433,13 @@ namespace Uralstech.UXR.QuestMeshing
             Mesh.SetSubMesh(0, new SubMeshDescriptor(0, indexCount), MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds);
 
             UpdateMeshFilterIfNeeded();
-            OnMeshDataUpdated?.Invoke();
+            OnMeshDataUpdated.InvokeSafe();
 
             await BakeCollisionIfNeededAsync();
             UpdateMeshColliderIfNeeded();
             
             await BakeNavMeshIfNeededAsync();
-            OnMeshRefreshed?.Invoke();
+            OnMeshRefreshed.InvokeSafe();
         }
 
         private async Awaitable BakeNavMeshIfNeededAsync()
@@ -443,7 +453,7 @@ namespace Uralstech.UXR.QuestMeshing
 
             _numMeshUpdatesSinceNavMeshUpdate = 0;
             await Awaitable.EndOfFrameAsync();
-            OnBeforeNavMeshBuild?.Invoke();
+            OnBeforeNavMeshBuild.InvokeSafe();
             
             if (_navMeshSurface.navMeshData == null)
                 _navMeshSurface.navMeshData = new NavMeshData();
@@ -468,6 +478,8 @@ namespace Uralstech.UXR.QuestMeshing
             {
                 await _navMeshSurface.UpdateNavMesh(_navMeshSurface.navMeshData);
                 _useFastNavMeshBake = useFastBake;
+                
+                OnAfterNavMeshBuild.InvokeSafe();
                 return;
             }
 
@@ -515,6 +527,7 @@ namespace Uralstech.UXR.QuestMeshing
             settings.maxJobWorkers = _fastNavMeshBakeWorkers;
             
             await NavMeshBuilder.UpdateNavMeshDataAsync(_navMeshSurface.navMeshData, settings, sources, navMeshBounds);
+            OnAfterNavMeshBuild.InvokeSafe();
         }
         
         // Abs and GetWorldBounds are based on https://github.com/Unity-Technologies/NavMeshComponents,
@@ -581,7 +594,7 @@ namespace Uralstech.UXR.QuestMeshing
             if (!_bakeCollision || !_meshIdV2.HasValue)
                 return;
 
-            OnBeforeColliderBuild?.Invoke();
+            OnBeforeColliderBuild.InvokeSafe();
 
             _collisionBakeJob?.Complete();
             _collisionBakeJob = new MeshColliderBakeJobV2(_meshIdV2.Value).Schedule();
@@ -591,6 +604,8 @@ namespace Uralstech.UXR.QuestMeshing
 
             _collisionBakeJob.Value.Complete();
             _collisionBakeJob = null;
+            
+            OnAfterColliderBuild.InvokeSafe();
         }
     #else
         private async Awaitable BakeCollisionIfNeededAsync()
@@ -598,7 +613,7 @@ namespace Uralstech.UXR.QuestMeshing
             if (!_bakeCollision || !_meshId.HasValue)
                 return;
             
-            OnBeforeColliderBuild?.Invoke();
+            OnBeforeColliderBuild.InvokeSafe();
 
             _collisionBakeJob?.Complete();
             _collisionBakeJob = new MeshColliderBakeJob(_meshId.Value).Schedule();
@@ -608,6 +623,8 @@ namespace Uralstech.UXR.QuestMeshing
 
             _collisionBakeJob.Value.Complete();
             _collisionBakeJob = null;
+            
+            OnAfterColliderBuild.InvokeSafe();
         }
     #endif
 
