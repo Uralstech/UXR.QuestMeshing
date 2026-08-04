@@ -154,6 +154,9 @@ namespace Uralstech.UXR.QuestMeshing
         [Space, Header("NavMesh Baking Options")]
         [SerializeField, Tooltip("If enabled, dynamically bakes a NavMesh surface from the generated mesh for AI pathfinding.")]
         private bool _bakeNavMesh = true;
+        
+        [SerializeField, Min(1), Tooltip("Bake the NavMesh once every N mesh updates. A value of 1 bakes after every mesh update.")]
+        private int _navMeshBakeSubfrequency = 1;
 
         [SerializeField, Tooltip("The NavMeshSurface component to bake the mesh into.")]
         private NavMeshSurface? _navMeshSurface;
@@ -194,6 +197,7 @@ namespace Uralstech.UXR.QuestMeshing
         private CancellationTokenSource? _updateCancellation;
         private DepthPreprocessor? _depthPreprocessor;
         private Transform _trackingSpace = null!;
+        private int _numMeshUpdatesSinceNavMeshUpdate;
         private bool _awakeSuccessful;
         private bool _startCalled;
 
@@ -432,7 +436,12 @@ namespace Uralstech.UXR.QuestMeshing
         {
             if (!_bakeNavMesh || _navMeshSurface == null)
                 return;
-            
+
+            _numMeshUpdatesSinceNavMeshUpdate++;
+            if (_numMeshUpdatesSinceNavMeshUpdate < _navMeshBakeSubfrequency)
+                return;
+
+            _numMeshUpdatesSinceNavMeshUpdate = 0;
             await Awaitable.EndOfFrameAsync();
             OnBeforeNavMeshBuild?.Invoke();
             
