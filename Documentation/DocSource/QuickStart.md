@@ -37,7 +37,9 @@ See the [API reference](~/api/Uralstech.UXR.QuestMeshing.DepthPreprocessor.yml) 
 * `Mesh`: the generated mesh instance.
 * `OnMeshDataUpdated`: invoked immediately after mesh data is updated.
 * `OnBeforeColliderBuild`: invoked before optional collider baking starts.
+* `OnAfterColliderBuild`: invoked after optional collider baking completes successfully.
 * `OnBeforeNavMeshBuild`: invoked before optional NavMesh baking starts.
+* `OnAfterNavMeshBuild`: invoked after optional NavMesh baking completes successfully.
 * `OnMeshRefreshed`: invoked after mesh data is updated and all optional collision and NavMesh baking has completed.
 
 ### Main Editor Variables

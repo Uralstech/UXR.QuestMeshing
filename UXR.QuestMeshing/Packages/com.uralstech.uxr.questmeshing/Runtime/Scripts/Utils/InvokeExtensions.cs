@@ -30,4 +30,19 @@ namespace Uralstech.UXR.QuestMeshing
             }, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.RunContinuationsAsynchronously);
         }
     }
+
+    internal static class DelegateExtensions
+    {
+        public static void InvokeSafe(this Action? action)
+        {
+            try
+            {
+                action?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogException(ex);
+            }
+        }
+    }
 }
