@@ -37,7 +37,9 @@ See the [API reference](~/api/Uralstech.UXR.QuestMeshing.DepthPreprocessor.yml) 
 * `Mesh`: the generated mesh instance.
 * `OnMeshDataUpdated`: invoked immediately after mesh data is updated.
 * `OnBeforeColliderBuild`: invoked before optional collider baking starts.
+* `OnAfterColliderBuild`: invoked after optional collider baking completes successfully.
 * `OnBeforeNavMeshBuild`: invoked before optional NavMesh baking starts.
+* `OnAfterNavMeshBuild`: invoked after optional NavMesh baking completes successfully.
 * `OnMeshRefreshed`: invoked after mesh data is updated and all optional collision and NavMesh baking has completed.
 
 ### Main Editor Variables
@@ -59,6 +61,7 @@ These key settings are exposed in the Inspector for tuning mesh quality, perform
 | **Mesh Collider Consumer**          | The `MeshCollider` that receives the generated mesh for physics collisions.                                                                                                                                | None                   | Optional                      |
 | **Bake Collision**                  | Enables collider baking for optimized physics queries.                                                                                                                                                     | `true`                 | Boolean                       |
 | **Bake NavMesh**                    | Enables NavMesh baking from the generated mesh.                                                                                                                                                            | `true`                 | Boolean                       |
+| **NavMesh Bake Subfrequency**       | Bake the NavMesh once every N mesh updates. A value of 1 bakes after every mesh update.                                                                                                                                                            | 1                 | Min: 1                       |
 | **NavMesh Surface**                 | The `NavMeshSurface` used for NavMesh baking. Required when NavMesh baking is enabled.                                                                                                                     | None                   | Required if baking is enabled |
 | **Use Fast NavMesh Bake**           | Uses an optimized NavMesh baking path that updates the NavMesh using only the generated depth mesh. This can be faster than a full `NavMeshSurface` bake, but all other NavMesh build sources are ignored. | `false`                | Boolean                       |
 | **Fast NavMesh Bake Workers**       | Maximum number of worker jobs Unity may use during fast NavMesh baking. Higher values can reduce bake time on CPUs with more cores, but may increase CPU usage and compete with other jobs.                | 1                      | Min: 0                        |
