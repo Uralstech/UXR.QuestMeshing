@@ -211,6 +211,9 @@ namespace Uralstech.UXR.QuestMeshing
         private bool _awakeSuccessful;
         private bool _startCalled;
 
+        private Task? _awaitingLoops;
+        private int _runningLoops;
+
 #if UNITY_6000_3_OR_NEWER
         private EntityId? _meshIdV2;
 #else
@@ -273,9 +276,19 @@ namespace Uralstech.UXR.QuestMeshing
             if (!_awakeSuccessful)
                 return;
 
-            _updateCancellation = new CancellationTokenSource();
-            RunVolumeUpdateLoopAsync(_updateCancellation.Token).Forget();
-            RunMeshRefreshLoopAsync(_updateCancellation.Token).Forget();
+            CancellationTokenSource cancellation = new CancellationTokenSource();
+            _updateCancellation = cancellation;
+            
+            if (_awaitingLoops?.IsCompleted is not false)
+                _awaitingLoops = AwaitLoops(cancellation.Token);
+            
+            _awaitingLoops.ContinueWith(_ =>
+            {
+                if (cancellation.IsCancellationRequested) return;
+                
+                RunLoopAsync(RunVolumeUpdateLoopAsync, cancellation.Token).Forget();
+                RunLoopAsync(RunMeshRefreshLoopAsync, cancellation.Token).Forget();
+            }, TaskContinuationOptions.ExecuteSynchronously);
         }
 
         protected void OnDisable()
@@ -283,9 +296,15 @@ namespace Uralstech.UXR.QuestMeshing
             if (!_awakeSuccessful)
                 return;
 
-            _updateCancellation?.Cancel();
-            _updateCancellation?.Dispose();
+            if (_awaitingLoops?.IsCompleted is not false)
+                _awaitingLoops = AwaitLoops(CancellationToken.None);
+            
+            CancellationTokenSource? cancellation = _updateCancellation;
             _updateCancellation = null;
+            
+            cancellation?.Cancel();
+            _awaitingLoops.ContinueWith(_ => cancellation?.Dispose(),
+                TaskContinuationOptions.ExecuteSynchronously);
         }
 
         protected void OnDestroy()
@@ -295,27 +314,33 @@ namespace Uralstech.UXR.QuestMeshing
 
             OVRManager.display.RecenteredPose -= Clear;
             
-            _collisionBakeJob?.Complete();
-            Volume.Release();
-            Destroy(Volume);
+            if (_awaitingLoops?.IsCompleted is not false)
+                _awaitingLoops = AwaitLoops(CancellationToken.None);
 
-            Destroy(Mesh);
+            _awaitingLoops.ContinueWith(_ =>
+            {
+                _collisionBakeJob?.Complete();
+                Volume.Release();
+                Destroy(Volume);
 
-            _frustumVolume?.Dispose();
-            _frustumVolume = null;
+                Destroy(Mesh);
+
+                _frustumVolume?.Dispose();
+                _frustumVolume = null;
             
-            _frustumUpdateDataBuffer.Dispose();
+                _frustumUpdateDataBuffer.Dispose();
 
-            _validVertCounterBuffer.Dispose();
-            _validTriCounterBuffer.Dispose();
-            _counterCopyBuffer.Dispose();
-            _vertexIndexBuffer.Dispose();
-            _vertexBuffer.Dispose();
-            _indexBuffer.Dispose();
+                _validVertCounterBuffer.Dispose();
+                _validTriCounterBuffer.Dispose();
+                _counterCopyBuffer.Dispose();
+                _vertexIndexBuffer.Dispose();
+                _vertexBuffer.Dispose();
+                _indexBuffer.Dispose();
             
-            _resourceCountArray.Dispose();
-            _verticesArray.Dispose();
-            _indicesArray.Dispose();
+                _resourceCountArray.Dispose();
+                _verticesArray.Dispose();
+                _indicesArray.Dispose();
+            }, TaskContinuationOptions.ExecuteSynchronously);
         }
 
         /// <summary>
@@ -327,20 +352,44 @@ namespace Uralstech.UXR.QuestMeshing
             _viBufferClearKernel.Dispatch(_vertexIndexBuffer.count);
         }
 
-        private async Task RunVolumeUpdateLoopAsync(CancellationToken token)
+        private async Task RunLoopAsync(Func<CancellationToken, Awaitable> loop, CancellationToken token)
         {
-            while (!_startCalled)
+            // This script runs on the main thread
+            _runningLoops++;
+
+            try
+            {
+                await loop.Invoke(token);
+            }
+            finally
+            {
+                _runningLoops--;
+            }
+        }
+
+        private async Task AwaitLoops(CancellationToken token)
+        {
+            while (_runningLoops > 0)
                 await Awaitable.NextFrameAsync();
+        }
+        
+        private async Awaitable RunVolumeUpdateLoopAsync(CancellationToken token)
+        {
+            CancellationToken destroyToken = destroyCancellationToken;
+            while (!_startCalled)
+                await Awaitable.NextFrameAsync(destroyToken);
 
             DepthPreprocessor? preprocessor = _depthPreprocessor;
-            if (preprocessor == null || Mathf.Approximately(TargetVolumeUpdateRateHertz, 0f))
+            if (preprocessor == null
+                || Mathf.Approximately(TargetVolumeUpdateRateHertz, 0f)
+                || token.IsCancellationRequested)
                 return;
 
             do
             {
                 if (!preprocessor.IsDataAvailable)
                 {
-                    await Awaitable.NextFrameAsync();
+                    await Awaitable.NextFrameAsync(CancellationToken.None);
                     continue;
                 }
                 
@@ -358,24 +407,27 @@ namespace Uralstech.UXR.QuestMeshing
                 _frustumUpdateDataBuffer.UnlockBufferAfterWrite<FrustumUpdateData>(1);
                 _updateVoxelsKernel.Dispatch(_frustumVolume!.count);
                 
-                await Awaitable.WaitForSecondsAsync(1f / TargetVolumeUpdateRateHertz);
+                await Awaitable.WaitForSecondsAsync(1f / TargetVolumeUpdateRateHertz, CancellationToken.None);
             } while (!token.IsCancellationRequested);
         }
 
-        private async Task RunMeshRefreshLoopAsync(CancellationToken token)
+        private async Awaitable RunMeshRefreshLoopAsync(CancellationToken token)
         {
+            CancellationToken destroyToken = destroyCancellationToken;
             while (!_startCalled)
-                await Awaitable.NextFrameAsync();
+                await Awaitable.NextFrameAsync(destroyToken);
                 
             DepthPreprocessor? preprocessor = _depthPreprocessor;
-            if (preprocessor == null || Mathf.Approximately(TargetMeshRefreshRateHertz, 0f))
+            if (preprocessor == null
+                || Mathf.Approximately(TargetMeshRefreshRateHertz, 0f)
+                || token.IsCancellationRequested)
                 return;
 
             do
             {
                 if (!preprocessor.IsDataAvailable)
                 {
-                    await Awaitable.NextFrameAsync();
+                    await Awaitable.NextFrameAsync(CancellationToken.None);
                     continue;
                 }
                 
@@ -386,7 +438,7 @@ namespace Uralstech.UXR.QuestMeshing
                 Mesh.bounds = new Bounds(_trackingSpace.TransformPoint(Vector3.zero), (Vector3)_volumeSize * _metersPerVoxel);
 
                 await ProcessMeshDataCPU();
-                await Awaitable.WaitForSecondsAsync(1f / TargetMeshRefreshRateHertz);
+                await Awaitable.WaitForSecondsAsync(1f / TargetMeshRefreshRateHertz, CancellationToken.None);
             } while (!token.IsCancellationRequested);
         }
         
@@ -412,7 +464,7 @@ namespace Uralstech.UXR.QuestMeshing
                 return;
             }
 
-            int vertexCount = (int)_resourceCountArray[0];
+            int vertexCount = Mathf.Min((int)_resourceCountArray[0], _trianglesBudget * 3);
             if (triangleCount == 0)
                 return;
             
