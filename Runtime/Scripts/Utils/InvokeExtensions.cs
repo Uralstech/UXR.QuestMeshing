@@ -25,7 +25,7 @@ namespace Uralstech.UXR.QuestMeshing
         {
             current.ContinueWith(static task =>
             {
-                foreach (Exception exception in task.Exception.Flatten().InnerExceptions)
+                foreach (Exception exception in task.Exception!.Flatten().InnerExceptions)
                     Debug.LogException(exception);
             }, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.RunContinuationsAsynchronously);
         }

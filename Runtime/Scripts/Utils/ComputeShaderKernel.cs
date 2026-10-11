@@ -37,7 +37,7 @@ namespace Uralstech.UXR.QuestMeshing
         public ComputeShaderKernel(ComputeShader shader, string name)
         {
             _shader = shader;
-            KernelIndex = _shader.FindKernel(name)!;
+            KernelIndex = _shader.FindKernel(name);
             _shader.GetKernelThreadGroupSizes(KernelIndex, out ThreadGroupSizes.x, out ThreadGroupSizes.y, out ThreadGroupSizes.z);
         }
 
